@@ -87,8 +87,9 @@ impl RawHubrisImage {
 
         let mut found_header = None;
 
-        // The header is located in one of two locations, depending on MCU
-        for header_offset in [0xbc, 0x298] {
+        // The header is located in one of a few locations, depending on MCU
+        // and versions of the PAC crates.
+        for header_offset in [0xbc, 0xc0, 0x298] {
             let mut header_magic = 0u32;
             self.read(start_addr + header_offset, &mut header_magic)?;
             if header_magic == HEADER_MAGIC {
@@ -193,6 +194,11 @@ impl RawHubrisImage {
 
         let mut prev = None;
         let mut num_bytes = 0;
+
+        // Iterate over ((byte address, byte), output byte)
+        //
+        // Looking at byte address isn't strictly necessary, but it lets us
+        // detect whether the input segments are discontiguous.
         for ((i, c), out) in self
             .data
             .range(lower_bound..)
