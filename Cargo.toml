@@ -1,9 +1,5 @@
-[package]
-name = "hubtools"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = ["hubedit", "hubtools"]
 
-[dependencies]
-srec = { version = "0.2.0", default-features = false }
-anyhow = { version = "1", default-features = false, features = ["std"] }
-zip = { version = "0.5" }
+[workspace.dependencies]
+hubtools.path = "hubtools"
