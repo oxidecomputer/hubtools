@@ -28,6 +28,7 @@ const CABOOSE_MAGIC: u32 = 0xcab0005e;
 /// Minimal Hubris archive, useful for some basic manipulation
 #[derive(Debug)]
 pub struct RawHubrisImage {
+    pub path: PathBuf,
     pub zip: Vec<u8>,
 
     pub data: BTreeMap<u32, LoadSegment>,
@@ -69,6 +70,7 @@ impl RawHubrisImage {
         };
 
         Ok(Self {
+            path: filename.as_ref().to_owned(),
             zip: contents,
             data,
             kentry,
@@ -169,10 +171,7 @@ impl RawHubrisImage {
         out.finish()?;
         drop(out);
 
-        println!("got output {}", out_buf.len());
-        println!("got output {}", self.zip.len());
-        println!("{}", self.zip == out_buf);
-        std::fs::write("out.zip", out_buf)?;
+        std::fs::write(&self.path, out_buf)?;
         Ok(())
     }
 
@@ -182,42 +181,41 @@ impl RawHubrisImage {
         start: u32,
         out: &mut T,
     ) -> Result<()> {
-        let out_data = out.as_bytes_mut();
-        let out_range = start..start + out_data.len() as u32;
-        let mut bytes_read = 0;
-        // TODO: this isn't particularly efficient, since it looks at **every
-        // single** LoadSegment
-        for (addr, data) in &self.data {
-            let in_data = data.data.as_slice();
-            let in_range = *addr..*addr + in_data.len() as u32;
-            // Non-overlapping regions
-            if out_range.end <= in_range.start
-                || in_range.end <= out_range.start
-            {
-                continue;
-            } else if out_range.start >= in_range.start {
-                let in_data =
-                    &in_data[(out_range.start - in_range.start) as usize..];
-                let count = out_data.len().min(in_data.len());
-                out_data[..count].copy_from_slice(&in_data[..count]);
-                bytes_read += count;
-            } else if in_range.start >= out_range.start {
-                let out_data = &mut out_data
-                    [(in_range.start - out_range.start) as usize..];
-                let count = out_data.len().min(in_data.len());
-                out_data[..count].copy_from_slice(&in_data[..count]);
-                bytes_read += count;
-            } else {
-                unreachable!("overlapping ranges must overlap");
+        // Find the element in the BTreeMap that's just below our start address
+        let lower_bound = *self
+            .data
+            .range(..=start)
+            .rev()
+            .next()
+            .ok_or_else(|| anyhow!("{start} is not available"))?
+            .0;
+        assert!(start >= lower_bound);
+
+        let mut prev = None;
+        let mut num_bytes = 0;
+        for ((i, c), out) in self
+            .data
+            .range(lower_bound..)
+            .flat_map(|(i, d)| {
+                d.data.iter().enumerate().map(|(j, c)| (*i as usize + j, c))
+            })
+            .skip((start - lower_bound) as usize)
+            .zip(out.as_bytes_mut())
+        {
+            if let Some(prev) = prev {
+                if i != prev + 1 {
+                    bail!("segments are not contiguous");
+                }
             }
+            prev = Some(i);
+            *out = *c;
+            num_bytes += 1;
         }
-        if bytes_read != out_data.len() {
-            bail!(
-                "could not copy out all data; expected {} bytes, got {}",
-                out_data.len(),
-                bytes_read
-            )
+
+        if num_bytes != (out.as_bytes().len()) {
+            bail!("did not write enough bytes");
         }
+
         Ok(())
     }
 
@@ -227,42 +225,43 @@ impl RawHubrisImage {
         start: u32,
         input: &T,
     ) -> Result<()> {
-        let in_data = input.as_bytes();
-        let in_range = start..start + in_data.len() as u32;
-        let mut bytes_written = 0;
-        // TODO: this isn't particularly efficient, since it looks at **every
-        // single** LoadSegment
-        for (addr, data) in &mut self.data {
-            let out_data = data.data.as_mut_slice();
-            let out_range = *addr..*addr + out_data.len() as u32;
-            // Non-overlapping regions
-            if in_range.end <= out_range.start
-                || out_range.end <= in_range.start
-            {
-                continue;
-            } else if in_range.start >= out_range.start {
-                let out_data = &mut out_data
-                    [(in_range.start - out_range.start) as usize..];
-                let count = in_data.len().min(out_data.len());
-                out_data[..count].copy_from_slice(&in_data[..count]);
-                bytes_written += count;
-            } else if out_range.start >= in_range.start {
-                let in_data =
-                    &in_data[(out_range.start - in_range.start) as usize..];
-                let count = in_data.len().min(out_data.len());
-                out_data[..count].copy_from_slice(&in_data[..count]);
-                bytes_written += count;
-            } else {
-                unreachable!("overlapping ranges must overlap");
+        // Find the element in the BTreeMap that's just below our start address
+        let lower_bound = *self
+            .data
+            .range(..=start)
+            .rev()
+            .next()
+            .ok_or_else(|| anyhow!("{start} is not available"))?
+            .0;
+
+        let mut prev = None;
+        let mut num_bytes = 0;
+        for ((i, out), c) in self
+            .data
+            .range_mut(lower_bound..)
+            .flat_map(|(i, d)| {
+                d.data
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(j, c)| (*i as usize + j, c))
+            })
+            .skip((start - lower_bound) as usize)
+            .zip(input.as_bytes())
+        {
+            if let Some(prev) = prev {
+                if i != prev + 1 {
+                    bail!("segments are not contiguous");
+                }
             }
+            prev = Some(i);
+            *out = *c;
+            num_bytes += 1;
         }
-        if bytes_written != in_data.len() {
-            bail!(
-                "could not copy out all data; expected {} bytes, got {}",
-                in_data.len(),
-                bytes_written
-            )
+
+        if num_bytes != (input.as_bytes().len()) {
+            bail!("did not write enough bytes");
         }
+
         Ok(())
     }
 }
