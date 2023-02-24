@@ -37,6 +37,9 @@ pub enum Error {
     #[error("zip error: {0}")]
     ZipError(#[from] zip::result::ZipError),
 
+    #[error("invalid file in zip archive: {0}")]
+    BadFileInZip(String),
+
     #[error("bad comment encoding")]
     BadCommentEncoding(std::str::Utf8Error),
 
@@ -101,6 +104,13 @@ pub enum Error {
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Minimal Hubris archive, useful for some basic manipulation
+///
+/// Specifically, a `RawHubrisArchive` contains the memory contents of the
+/// image, stored as a map from address to [`LoadSegment`], along with the
+/// kernel entry point.
+///
+/// This is sufficient to reconstruct the SREC file, without any ELF
+/// manipulation or parsing of the manifest.
 #[derive(Debug)]
 pub struct RawHubrisImage {
     pub path: PathBuf,
@@ -194,6 +204,7 @@ impl RawHubrisImage {
             ..start_addr + image_size - 4)
     }
 
+    /// Reads the caboose from local memory
     pub fn read_caboose(&self) -> Result<Vec<u8>, Error> {
         // Skip the start and end word, which are markers
         let caboose_range = self.caboose_range()?;
@@ -202,6 +213,9 @@ impl RawHubrisImage {
         Ok(out)
     }
 
+    /// Writes to the caboose in local memory
+    ///
+    /// [`overwrite`] must be called to write these changes back to disk.
     pub fn write_caboose(&mut self, data: &[u8]) -> Result<(), Error> {
         // Skip the start and end word, which are markers
         let caboose_range = self.caboose_range()?;
@@ -211,9 +225,12 @@ impl RawHubrisImage {
         self.write(caboose_range.start, data)
     }
 
+    /// Erases the caboose in local memory
+    ///
+    /// [`overwrite`] must be called to write these changes back to disk.
     pub fn erase_caboose(&mut self) -> Result<(), Error> {
         let caboose_range = self.caboose_range()?;
-        let data = vec![0xff; caboose_range.len()];
+        let data = vec![0xFFu8; caboose_range.len()];
         self.write(caboose_range.start, data.as_slice())
     }
 
@@ -251,13 +268,10 @@ impl RawHubrisImage {
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
-            let outpath = match file.enclosed_name() {
-                Some(path) => path.to_owned(),
-                None => {
-                    println!("bad file");
-                    continue;
-                }
-            };
+            let outpath = file
+                .enclosed_name()
+                .ok_or_else(|| Error::BadFileInZip(file.name().to_owned()))?
+                .to_owned();
             let path = outpath.iter().collect::<Vec<_>>();
             let new_data = if path.len() == 2
                 && path[0].to_str() == Some("img")
@@ -375,7 +389,7 @@ impl RawHubrisImage {
         }
 
         if num_bytes != (input.as_bytes().len()) {
-            return Err(Error::ReadFailed);
+            return Err(Error::WriteFailed);
         }
 
         Ok(())

@@ -57,7 +57,7 @@ fn main() -> Result<()> {
 
             let mut text = vec![];
             tlvc_text::save(&mut text, &t).unwrap();
-            print!("{}", std::str::from_utf8(&text).unwrap());
+            println!("{}", std::str::from_utf8(&text).unwrap());
         }
         Command::WriteCaboose { version, force } => {
             if !archive.is_caboose_empty()? && !force {
@@ -80,10 +80,5 @@ fn main() -> Result<()> {
         }
     }
 
-    //archive.write_caboose(&[1, 2, 3, 4, 5])?;
-    let caboose = archive.read_caboose()?;
-    println!("{caboose:?}");
-
-    archive.overwrite()?;
     Ok(())
 }
