@@ -7,7 +7,7 @@ use zerocopy::{AsBytes, FromBytes};
 
 use std::{
     collections::BTreeMap,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -51,6 +51,9 @@ pub enum Error {
 
     #[error("file read error: {0}")]
     FileReadError(std::io::Error),
+
+    #[error("could not create temporary dir: {0}")]
+    TempDirError(std::io::Error),
 
     #[error("srec decoding error: {0}")]
     BadSrec(std::str::Utf8Error),
@@ -223,6 +226,16 @@ impl RawHubrisImage {
     ///
     /// Changes are only made to the `img/final.*` files
     pub fn overwrite(&self) -> Result<(), Error> {
+        // We'll use a temporary file to create modified object files, because
+        // we build them with `arm-none-eabi-objcopy`
+        let temp_dir = tempfile::tempdir().map_err(Error::TempDirError)?;
+        write_srec(
+            &self.data,
+            self.kentry,
+            &temp_dir.path().join("final.srec"),
+        )?;
+        translate_srec_to_other_formats(temp_dir.path(), "final")?;
+
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
@@ -245,8 +258,25 @@ impl RawHubrisImage {
                     continue;
                 }
             };
+            let path = outpath.iter().collect::<Vec<_>>();
+            let new_data = if path.len() == 2
+                && path[0].to_str() == Some("img")
+                && path[1].to_str().unwrap().starts_with("final.")
+            {
+                Some(
+                    std::fs::read(temp_dir.path().join(path[1]))
+                        .map_err(Error::FileReadError)?,
+                )
+            } else {
+                None
+            };
+
             out.start_file(outpath.to_slash().unwrap(), opts)?;
-            std::io::copy(&mut file, &mut out).unwrap();
+            if let Some(data) = new_data {
+                out.write_all(&data).unwrap();
+            } else {
+                std::io::copy(&mut file, &mut out).unwrap();
+            }
         }
         out.finish()?;
         drop(out);
