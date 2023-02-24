@@ -1,6 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
+use path_slash::PathBufExt;
 use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes};
 
@@ -59,6 +60,9 @@ pub enum Error {
 
     #[error("could not find magic number {0:#x}")]
     MissingMagic(u32),
+
+    #[error("caboose is not present in this image")]
+    MissingCaboose,
 
     #[error("bad caboose magic number: expected {0:#x}, got {1:#x}")]
     BadCabooseMagic(u32, u32),
@@ -176,7 +180,10 @@ impl RawHubrisImage {
         self.read(start_addr + image_size - 4, &mut caboose_size)?;
 
         let mut caboose_magic = 0u32;
-        self.read(start_addr + image_size - caboose_size, &mut caboose_magic)?;
+        let caboose_magic_addr = (start_addr + image_size)
+            .checked_sub(caboose_size)
+            .ok_or(Error::MissingCaboose)?;
+        self.read(caboose_magic_addr, &mut caboose_magic)?;
         if caboose_magic != CABOOSE_MAGIC {
             return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
         }
@@ -199,6 +206,17 @@ impl RawHubrisImage {
             return Err(Error::OversizedData(data.len(), caboose_range.len()));
         }
         self.write(caboose_range.start, data)
+    }
+
+    pub fn erase_caboose(&mut self) -> Result<(), Error> {
+        let caboose_range = self.caboose_range()?;
+        let data = vec![0xff; caboose_range.len()];
+        self.write(caboose_range.start, data.as_slice())
+    }
+
+    pub fn is_caboose_empty(&self) -> Result<bool, Error> {
+        let caboose = self.read_caboose()?;
+        Ok(caboose.into_iter().all(|c| c == 0xFF))
     }
 
     /// Overwrites the existing archive with our modifications
@@ -227,7 +245,7 @@ impl RawHubrisImage {
                     continue;
                 }
             };
-            out.start_file(outpath.as_os_str().to_str().unwrap(), opts)?;
+            out.start_file(outpath.to_slash().unwrap(), opts)?;
             std::io::copy(&mut file, &mut out).unwrap();
         }
         out.finish()?;
