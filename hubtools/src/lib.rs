@@ -1,8 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
-use anyhow::{anyhow, bail, Context, Result};
+use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes};
 
 use std::{
@@ -23,6 +22,75 @@ pub struct LoadSegment {
 const HEADER_MAGIC: u32 = 0x15356637;
 const CABOOSE_MAGIC: u32 = 0xcab0005e;
 
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("could not read file `{0}`: {1}")]
+    FileReadFailed(PathBuf, std::io::Error),
+
+    #[error("could not write file `{0}`: {1}")]
+    FileWriteFailed(PathBuf, std::io::Error),
+
+    #[error("could not create zip archive: {0}")]
+    ZipNewError(zip::result::ZipError),
+
+    #[error("zip error: {0}")]
+    ZipError(#[from] zip::result::ZipError),
+
+    #[error("bad comment encoding")]
+    BadCommentEncoding(std::str::Utf8Error),
+
+    #[error("could not parse version string `{0}`")]
+    BadVersionString(std::num::ParseIntError, String),
+
+    #[error("could not parse Hubris archive version from `{0}`")]
+    BadComment(String),
+
+    #[error("could not find `{1}`: {0}")]
+    MissingFile(zip::result::ZipError, String),
+
+    #[error("file read error: {0}")]
+    FileReadError(std::io::Error),
+
+    #[error("srec decoding error: {0}")]
+    BadSrec(std::str::Utf8Error),
+
+    #[error("image is empty")]
+    EmptyImage,
+
+    #[error("could not find magic number {0:#x}")]
+    MissingMagic(u32),
+
+    #[error("bad caboose magic number: expected {0:#x}, got {1:#x}")]
+    BadCabooseMagic(u32, u32),
+
+    #[error("data is too large ({0:#x}) for caboose ({1:#x})")]
+    OversizedData(usize, usize),
+
+    #[error("start address {0:#x} is not available")]
+    BadStartAddress(u32),
+
+    #[error("memory map has discontiguous segments at the target range")]
+    DiscontiguousSegments,
+
+    #[error("failed to write the entire data")]
+    WriteFailed,
+
+    #[error("failed to read the entire data")]
+    ReadFailed,
+
+    #[error("calling objcopy with {0:?} failed: {1}")]
+    ObjcopyCallFailed(Command, std::io::Error),
+
+    #[error("objcopy failed, see output for details")]
+    ObjcopyFailed,
+
+    #[error("srec error: {0}")]
+    SrecError(#[from] srec::ReaderError),
+
+    #[error("{0}: record address range {1:#x?} overlaps {2:#x}")]
+    MemoryRangeOverlap(String, std::ops::Range<u32>, u32),
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Minimal Hubris archive, useful for some basic manipulation
@@ -38,34 +106,37 @@ pub struct RawHubrisImage {
 impl RawHubrisImage {
     pub fn load<P: AsRef<Path> + std::fmt::Debug + Copy>(
         filename: P,
-    ) -> Result<Self> {
-        let contents = std::fs::read(filename).with_context(|| {
-            format!("could not read archive file {filename:?}")
+    ) -> Result<Self, Error> {
+        let contents = std::fs::read(filename).map_err(|e| {
+            Error::FileReadFailed(filename.as_ref().to_owned(), e)
         })?;
         let cursor = Cursor::new(contents.as_slice());
-        let mut archive = zip::ZipArchive::new(cursor)?;
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
         let comment = std::str::from_utf8(archive.comment())
-            .context("Failed to decode comment string")?;
+            .map_err(Error::BadCommentEncoding)?;
 
         match comment.strip_prefix("hubris build archive v") {
             Some(v) => {
-                let _v: u32 = v.parse().with_context(|| {
-                    format!("Failed to parse version string {v}")
-                })?;
+                let _v: u32 = v
+                    .parse()
+                    .map_err(|e| Error::BadVersionString(e, v.to_owned()))?;
             }
             None => {
-                bail!("could not parse hubris archive version from '{comment}'")
+                return Err(Error::BadComment(comment.to_owned()));
             }
         }
 
         let (data, kentry) = {
             const SREC_FILE: &str = "img/final.srec";
-            let mut file = archive
-                .by_name(SREC_FILE)
-                .with_context(|| format!("failed to find '{SREC_FILE:?}'"))?;
+            let mut file = archive.by_name(SREC_FILE).map_err(|e| {
+                Error::MissingFile(e, format!("failed to find '{SREC_FILE:?}'"))
+            })?;
             let mut buffer = vec![];
-            file.read_to_end(&mut buffer)?;
-            let srec_str = std::str::from_utf8(&buffer)?;
+            file.read_to_end(&mut buffer)
+                .map_err(Error::FileReadError)?;
+            let srec_str =
+                std::str::from_utf8(&buffer).map_err(Error::BadSrec)?;
             load_srec(Path::new(SREC_FILE), srec_str)?
         };
 
@@ -77,13 +148,9 @@ impl RawHubrisImage {
         })
     }
 
-    fn caboose_range(&self) -> Result<std::ops::Range<u32>> {
-        let start_addr = self
-            .data
-            .keys()
-            .next()
-            .cloned()
-            .ok_or_else(|| anyhow!("empty image?"))?;
+    fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
+        let start_addr =
+            self.data.keys().next().cloned().ok_or(Error::EmptyImage)?;
 
         let mut found_header = None;
 
@@ -99,8 +166,8 @@ impl RawHubrisImage {
         }
 
         let Some(header_offset) = found_header else {
-                bail!("could not find HEADER_MAGIC {HEADER_MAGIC:x}");
-            };
+            return Err(Error::MissingMagic(HEADER_MAGIC));
+        };
 
         let mut image_size = 0u32;
         self.read(start_addr + header_offset + 4, &mut image_size)?;
@@ -111,16 +178,13 @@ impl RawHubrisImage {
         let mut caboose_magic = 0u32;
         self.read(start_addr + image_size - caboose_size, &mut caboose_magic)?;
         if caboose_magic != CABOOSE_MAGIC {
-            bail!(
-                "Invalid caboose magic: expected {CABOOSE_MAGIC}, \
-                     got {caboose_magic}"
-            );
+            return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
         }
         Ok(start_addr + image_size - caboose_size + 4
             ..start_addr + image_size - 4)
     }
 
-    pub fn read_caboose(&self) -> Result<Vec<u8>> {
+    pub fn read_caboose(&self) -> Result<Vec<u8>, Error> {
         // Skip the start and end word, which are markers
         let caboose_range = self.caboose_range()?;
         let mut out = vec![0u8; caboose_range.len()];
@@ -128,15 +192,11 @@ impl RawHubrisImage {
         Ok(out)
     }
 
-    pub fn write_caboose(&mut self, data: &[u8]) -> Result<()> {
+    pub fn write_caboose(&mut self, data: &[u8]) -> Result<(), Error> {
         // Skip the start and end word, which are markers
         let caboose_range = self.caboose_range()?;
         if data.len() > caboose_range.len() {
-            bail!(
-                "data is too long ({} bytes) for caboose ({} bytes)",
-                data.len(),
-                caboose_range.len()
-            );
+            return Err(Error::OversizedData(data.len(), caboose_range.len()));
         }
         self.write(caboose_range.start, data)
     }
@@ -144,9 +204,10 @@ impl RawHubrisImage {
     /// Overwrites the existing archive with our modifications
     ///
     /// Changes are only made to the `img/final.*` files
-    pub fn overwrite(&self) -> Result<()> {
+    pub fn overwrite(&self) -> Result<(), Error> {
         let cursor = Cursor::new(self.zip.as_slice());
-        let mut archive = zip::ZipArchive::new(cursor)?;
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
 
         // Write to an in-memory buffer
         let mut out_buf = vec![];
@@ -172,7 +233,8 @@ impl RawHubrisImage {
         out.finish()?;
         drop(out);
 
-        std::fs::write(&self.path, out_buf)?;
+        std::fs::write(&self.path, out_buf)
+            .map_err(|e| Error::FileWriteFailed(self.path.clone(), e))?;
         Ok(())
     }
 
@@ -181,14 +243,14 @@ impl RawHubrisImage {
         &self,
         start: u32,
         out: &mut T,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         // Find the element in the BTreeMap that's just below our start address
         let lower_bound = *self
             .data
             .range(..=start)
             .rev()
             .next()
-            .ok_or_else(|| anyhow!("{start} is not available"))?
+            .ok_or(Error::BadStartAddress(start))?
             .0;
         assert!(start >= lower_bound);
 
@@ -210,7 +272,7 @@ impl RawHubrisImage {
         {
             if let Some(prev) = prev {
                 if i != prev + 1 {
-                    bail!("segments are not contiguous");
+                    return Err(Error::DiscontiguousSegments);
                 }
             }
             prev = Some(i);
@@ -219,7 +281,7 @@ impl RawHubrisImage {
         }
 
         if num_bytes != (out.as_bytes().len()) {
-            bail!("did not write enough bytes");
+            return Err(Error::WriteFailed);
         }
 
         Ok(())
@@ -230,14 +292,14 @@ impl RawHubrisImage {
         &mut self,
         start: u32,
         input: &T,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         // Find the element in the BTreeMap that's just below our start address
         let lower_bound = *self
             .data
             .range(..=start)
             .rev()
             .next()
-            .ok_or_else(|| anyhow!("{start} is not available"))?
+            .ok_or(Error::BadStartAddress(start))?
             .0;
 
         let mut prev = None;
@@ -256,7 +318,7 @@ impl RawHubrisImage {
         {
             if let Some(prev) = prev {
                 if i != prev + 1 {
-                    bail!("segments are not contiguous");
+                    return Err(Error::DiscontiguousSegments);
                 }
             }
             prev = Some(i);
@@ -265,7 +327,7 @@ impl RawHubrisImage {
         }
 
         if num_bytes != (input.as_bytes().len()) {
-            bail!("did not write enough bytes");
+            return Err(Error::ReadFailed);
         }
 
         Ok(())
@@ -280,7 +342,7 @@ fn objcopy_translate_format(
     src: &Path,
     out_format: &str,
     dest: &Path,
-) -> Result<()> {
+) -> Result<(), Error> {
     let mut cmd = Command::new("arm-none-eabi-objcopy");
     cmd.arg("-I")
         .arg(in_format)
@@ -291,21 +353,20 @@ fn objcopy_translate_format(
         .arg(src)
         .arg(dest);
 
-    let status = cmd
-        .status()
-        .context(format!("failed to objcopy ({:?})", cmd))?;
+    let status = cmd.status().map_err(|e| Error::ObjcopyCallFailed(cmd, e))?;
 
-    if !status.success() {
-        bail!("objcopy failed, see output for details");
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::ObjcopyFailed)
     }
-    Ok(())
 }
 
 /// Convert SREC to other formats for convenience.
 pub fn translate_srec_to_other_formats(
     dist_dir: &Path,
     name: &str,
-) -> Result<()> {
+) -> Result<(), Error> {
     let src = dist_dir.join(format!("{}.srec", name));
     for (out_type, ext) in [
         ("elf32-littlearm", "elf"),
@@ -329,7 +390,7 @@ pub fn translate_srec_to_other_formats(
 pub fn load_srec(
     input: &Path,
     srec_text: &str,
-) -> Result<(BTreeMap<u32, LoadSegment>, u32)> {
+) -> Result<(BTreeMap<u32, LoadSegment>, u32), Error> {
     let mut output = BTreeMap::new();
     for record in srec::reader::read_records(srec_text) {
         let record = record?;
@@ -339,12 +400,11 @@ pub fn load_srec(
                 let range =
                     data.address.0..data.address.0 + data.data.len() as u32;
                 if let Some(overlap) = output.range(range.clone()).next() {
-                    bail!(
-                        "{}: record address range {:x?} overlaps {:x}",
-                        input.display(),
+                    return Err(Error::MemoryRangeOverlap(
+                        input.display().to_string(),
                         range,
-                        overlap.0
-                    )
+                        *overlap.0,
+                    ));
                 }
                 output.insert(
                     data.address.0,
@@ -368,10 +428,11 @@ pub fn binary_to_srec(
     bin_addr: u32,
     entry: u32,
     out: &Path,
-) -> Result<()> {
+) -> Result<(), Error> {
     let mut srec_out = vec![srec::Record::S0(name.to_string())];
 
-    let binary = std::fs::read(binary)?;
+    let binary = std::fs::read(binary)
+        .map_err(|e| Error::FileReadFailed(binary.to_owned(), e))?;
 
     let mut addr = bin_addr;
     for chunk in binary.chunks(255 - 5) {
@@ -394,7 +455,8 @@ pub fn binary_to_srec(
     srec_out.push(srec::Record::S7(srec::Address32(entry)));
 
     let srec_image = srec::writer::generate_srec_file(&srec_out);
-    std::fs::write(out, srec_image)?;
+    std::fs::write(out, srec_image)
+        .map_err(|e| Error::FileWriteFailed(out.to_owned(), e))?;
     Ok(())
 }
 
@@ -403,7 +465,7 @@ pub fn write_srec(
     sections: &BTreeMap<u32, LoadSegment>,
     kentry: u32,
     out: &Path,
-) -> Result<()> {
+) -> Result<(), Error> {
     let mut srec_out = vec![srec::Record::S0("hubris".to_string())];
     for (&base, sec) in sections {
         // SREC record size limit is 255 (0xFF). 32-bit addressed records
@@ -430,6 +492,7 @@ pub fn write_srec(
     srec_out.push(srec::Record::S7(srec::Address32(kentry)));
 
     let srec_image = srec::writer::generate_srec_file(&srec_out);
-    std::fs::write(out, srec_image)?;
+    std::fs::write(out, srec_image)
+        .map_err(|e| Error::FileWriteFailed(out.to_owned(), e))?;
     Ok(())
 }
