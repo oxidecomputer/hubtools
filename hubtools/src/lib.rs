@@ -58,6 +58,9 @@ pub enum Error {
     #[error("could not create temporary dir: {0}")]
     TempDirError(std::io::Error),
 
+    #[error("manifest decoding error: {0}")]
+    BadManifest(std::str::Utf8Error),
+
     #[error("srec decoding error: {0}")]
     BadSrec(std::str::Utf8Error),
 
@@ -99,6 +102,9 @@ pub enum Error {
 
     #[error("{0}: record address range {1:#x?} overlaps {2:#x}")]
     MemoryRangeOverlap(String, std::ops::Range<u32>, u32),
+
+    #[error("bad TOML file: {0}")]
+    BadToml(toml::de::Error),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -213,6 +219,19 @@ impl RawHubrisImage {
         Ok(out)
     }
 
+    fn extract_file(&self, name: &str) -> Result<Vec<u8>, Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+        let mut file = archive.by_name(name).map_err(|e| {
+            Error::MissingFile(e, format!("failed to find '{name:?}'"))
+        })?;
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer)
+            .map_err(Error::FileReadError)?;
+        Ok(buffer)
+    }
+
     /// Writes to the caboose in local memory
     ///
     /// [`overwrite`] must be called to write these changes back to disk.
@@ -223,6 +242,83 @@ impl RawHubrisImage {
             return Err(Error::OversizedData(data.len(), caboose_range.len()));
         }
         self.write(caboose_range.start, data)
+    }
+
+    pub fn write_version_to_caboose(
+        &mut self,
+        version: &str,
+    ) -> Result<(), Error> {
+        // Manually build the TLV-C data for the caboose
+        let data = tlvc_text::Piece::Chunk(
+            tlvc_text::Tag::new(*b"VERS"),
+            vec![tlvc_text::Piece::String(version.to_owned())],
+        );
+        let out = tlvc_text::pack(&[data]);
+        self.write_caboose(&out)?;
+        Ok(())
+    }
+
+    /// Writes a default caboose
+    ///
+    /// The default caboose includes the following tags:
+    /// - `GITC`: the current Git commit with an optional trailing "-dirty"
+    /// - `NAME`: image name
+    /// - `BORD`: board name
+    /// - `VERS`: the provided version string (if present)
+    ///
+    /// Everything except `VERS` are extracted from the Hubris archive itself.
+    pub fn write_default_caboose(
+        &mut self,
+        version: Option<&String>,
+    ) -> Result<(), Error> {
+        let manifest = self.extract_file("app.toml")?;
+        let git = self.extract_file("git-rev")?;
+
+        let manifest: toml::Value = toml::from_str(
+            std::str::from_utf8(&manifest).map_err(Error::BadManifest)?,
+        )
+        .map_err(Error::BadToml)?;
+
+        let board = manifest
+            .as_table()
+            .unwrap()
+            .get("board")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let name = manifest
+            .as_table()
+            .unwrap()
+            .get("name")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let mut chunks = vec![
+            tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(*b"GITC"),
+                vec![tlvc_text::Piece::Bytes(git)],
+            ),
+            tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(*b"BORD"),
+                vec![tlvc_text::Piece::String(board)],
+            ),
+            tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(*b"NAME"),
+                vec![tlvc_text::Piece::String(name)],
+            ),
+        ];
+        if let Some(v) = version {
+            let data = tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(*b"VERS"),
+                vec![tlvc_text::Piece::String(v.to_owned())],
+            );
+            chunks.push(data)
+        }
+        let out = tlvc_text::pack(&chunks);
+        self.write_caboose(&out)
     }
 
     /// Erases the caboose in local memory
