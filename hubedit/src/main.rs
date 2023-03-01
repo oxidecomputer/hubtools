@@ -26,6 +26,10 @@ pub enum Command {
 
         #[clap(short, long)]
         force: bool,
+
+        /// Do not write default caboose parameters
+        #[clap(short, long)]
+        no_defaults: bool,
     },
     EraseCaboose {
         #[clap(short, long)]
@@ -59,16 +63,19 @@ fn main() -> Result<()> {
             tlvc_text::save(&mut text, &t).unwrap();
             println!("{}", std::str::from_utf8(&text).unwrap());
         }
-        Command::WriteCaboose { version, force } => {
+        Command::WriteCaboose {
+            version,
+            force,
+            no_defaults,
+        } => {
             if !archive.is_caboose_empty()? && !force {
                 bail!("archive already has a caboose");
             }
-            let data = tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(*b"VERS"),
-                vec![tlvc_text::Piece::String(version)],
-            );
-            let out = tlvc_text::pack(&[data]);
-            archive.write_caboose(&out)?;
+            if no_defaults {
+                archive.write_version_to_caboose(&version)?;
+            } else {
+                archive.write_default_caboose(Some(&version))?;
+            }
             archive.overwrite()?;
         }
         Command::EraseCaboose { force } => {

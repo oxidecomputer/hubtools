@@ -11,3 +11,6 @@ thiserror.version = "1"
 toml.version = "0.7"
 zerocopy.version = "0.6"
 zip.version = "0.5.13"
+
+tlvc.git = "https://github.com/oxidecomputer/tlvc"
+tlvc-text.git = "https://github.com/oxidecomputer/tlvc"
