@@ -276,6 +276,7 @@ impl RawHubrisImage {
         self.write(caboose_range.start, data)
     }
 
+    /// Writes the given version (and nothing else) to the caboose
     pub fn write_version_to_caboose(
         &mut self,
         version: &str,
@@ -362,6 +363,7 @@ impl RawHubrisImage {
         self.write(caboose_range.start, data.as_slice())
     }
 
+    /// Checks whether the caboose is empty in local memory
     pub fn is_caboose_empty(&self) -> Result<bool, Error> {
         let caboose = self.read_caboose()?;
         Ok(caboose.into_iter().all(|c| c == 0xFF))
@@ -439,14 +441,13 @@ impl RawHubrisImage {
     ) -> Result<(), Error> {
         let start = start
             .checked_sub(self.start_addr)
-            .ok_or(Error::BadStartAddress(start))?;
+            .ok_or(Error::BadStartAddress(start))? as usize;
 
-        let slice = &self.data[start as usize..];
-        let out_len = out.as_bytes().len();
-        if slice.len() < out_len {
-            return Err(Error::ReadFailed);
-        }
-        out.as_bytes_mut().copy_from_slice(&slice[..out_len]);
+        let chunk = self
+            .data
+            .get(start..start + out.as_bytes().len())
+            .ok_or(Error::ReadFailed)?;
+        out.as_bytes_mut().copy_from_slice(chunk);
         Ok(())
     }
 
@@ -458,15 +459,22 @@ impl RawHubrisImage {
     ) -> Result<(), Error> {
         let start = start
             .checked_sub(self.start_addr)
-            .ok_or(Error::BadStartAddress(start))?;
+            .ok_or(Error::BadStartAddress(start))? as usize;
 
-        let slice = &mut self.data[start as usize..];
-        let input_len = input.as_bytes().len();
-        if slice.len() < input_len {
-            return Err(Error::WriteFailed);
-        }
-        slice[..input_len].copy_from_slice(input.as_bytes());
+        let chunk = self
+            .data
+            .get_mut(start..start + input.as_bytes().len())
+            .ok_or(Error::WriteFailed)?;
+        chunk.copy_from_slice(input.as_bytes());
         Ok(())
+    }
+
+    /// Returns a mutable reference to the inner data
+    ///
+    /// Modifications made here are not applied to the on-disk archive until
+    /// `overwrite` is called.
+    pub fn get_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.data
     }
 }
 
