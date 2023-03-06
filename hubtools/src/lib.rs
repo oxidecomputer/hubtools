@@ -585,7 +585,67 @@ pub fn binary_to_srec(
         addr += chunk.len() as u32;
     }
 
+    std::fs::write("lol.elf", binary_to_elf(binary, start_addr, 0x8000119));
+
     Ok(srec_out)
+}
+
+pub fn binary_to_elf(binary: &[u8], start_addr: u32, kentry: u32) -> Vec<u8> {
+    let mut out = vec![];
+    let mut w = object::write::elf::Writer::new(
+        object::Endianness::Little,
+        false,
+        &mut out,
+    );
+
+    // The order in which we do things is taken from
+    // `object/src/write/elf/object.rs:elf_write`, but this is dramatically
+    // simpler: we're writing a single section with no relocations, symbols, or
+    // other fanciness (other than .shstrtab)
+    let header = object::write::elf::FileHeader {
+        abi_version: 0,
+        e_entry: kentry as u64,
+        e_flags: 0,
+        e_machine: object::elf::EM_ARM,
+        e_type: object::elf::ET_REL,
+        os_abi: object::elf::ELFOSABI_ARM,
+    };
+    w.reserve_file_header();
+
+    let _index = w.reserve_section_index();
+    let offset = w.reserve(binary.len(), 4);
+    let sec1_name = w.add_section_name(b".sec1");
+
+    w.reserve_shstrtab_section_index();
+    w.reserve_shstrtab();
+
+    w.reserve_section_headers();
+
+    w.write_file_header(&header).unwrap();
+    w.write_align(4);
+    w.write(binary);
+
+    w.write_shstrtab();
+    w.write_null_section_header();
+
+    w.write_section_header(&object::write::elf::SectionHeader {
+        name: Some(sec1_name),
+        sh_addr: start_addr as u64,
+        sh_addralign: 1,
+        sh_entsize: 0,
+        sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
+        sh_info: 0,
+        sh_link: 0,
+        sh_offset: offset as u64,
+        sh_size: binary.len() as u64,
+        sh_type: object::elf::SHT_PROGBITS,
+    });
+
+    w.write_shstrtab_section_header();
+
+    debug_assert_eq!(w.reserved_len(), w.len());
+
+    out
 }
 
 /// Converts from an SREC-style memory map to a single binary blob
