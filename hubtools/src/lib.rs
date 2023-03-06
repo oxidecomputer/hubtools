@@ -377,7 +377,7 @@ impl RawHubrisImage {
         // We'll use a temporary file to create modified object files, because
         // we build them with `arm-none-eabi-objcopy`
         let temp_dir = tempfile::tempdir().map_err(Error::TempDirError)?;
-        let srec = binary_to_srec(&self.data, "final.bin", self.kentry)?;
+        let srec = binary_to_srec(&self.data, "final.bin", self.start_addr)?;
         write_srec(&srec, self.kentry, &temp_dir.path().join("final.srec"))?;
         translate_srec_to_other_formats(temp_dir.path(), "final")?;
 
@@ -569,11 +569,11 @@ pub fn load_srec(
 pub fn binary_to_srec(
     binary: &[u8],
     name: &str,
-    bin_addr: u32,
+    start_addr: u32,
 ) -> Result<BTreeMap<u32, LoadSegment>, Error> {
     let mut srec_out = BTreeMap::new();
 
-    let mut addr = bin_addr;
+    let mut addr = start_addr;
     for chunk in binary.chunks(255 - 5) {
         srec_out.insert(
             addr,
