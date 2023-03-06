@@ -6,7 +6,7 @@ use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes};
 
 use std::{
-    collections::BTreeMap,
+    collections::{btree_map::Entry, BTreeMap},
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -105,24 +105,36 @@ pub enum Error {
 
     #[error("bad TOML file: {0}")]
     BadToml(toml::de::Error),
+
+    #[error("duplicate filename in zip archive: {0}")]
+    DuplicateFilename(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Minimal Hubris archive, useful for some basic manipulation
-///
-/// Specifically, a `RawHubrisArchive` contains the memory contents of the
-/// image, stored as a map from address to [`LoadSegment`], along with the
-/// kernel entry point.
-///
-/// This is sufficient to reconstruct the SREC file, without any ELF
-/// manipulation or parsing of the manifest.
+/// Minimal Hubris archive, useful for some basic manipulation of the binary
+/// image within.
 #[derive(Debug)]
 pub struct RawHubrisImage {
+    /// Source path of the Hubris archive on disk
     pub path: PathBuf,
+
+    /// New files to be inserted into the zip archive when `overwrite` is called
+    new_files: BTreeMap<String, Vec<u8>>,
+
+    /// Raw data of the Hubris archive zip file
+    ///
+    /// Note that this may diverge from the data stored below as we edit it;
+    /// call `overwrite` to write it back to disk.
     pub zip: Vec<u8>,
 
-    pub data: BTreeMap<u32, LoadSegment>,
+    /// Start address of the raw data (absolute)
+    pub start_addr: u32,
+
+    /// Raw data from the image
+    pub data: Vec<u8>,
+
+    /// Kernel entry point (absolute address)
     pub kentry: u32,
 }
 
@@ -150,7 +162,7 @@ impl RawHubrisImage {
             }
         }
 
-        let (data, kentry) = {
+        let (start_addr, data, kentry) = {
             const SREC_FILE: &str = "img/final.srec";
             let mut file = archive.by_name(SREC_FILE).map_err(|e| {
                 Error::MissingFile(e, format!("failed to find '{SREC_FILE:?}'"))
@@ -160,28 +172,48 @@ impl RawHubrisImage {
                 .map_err(Error::FileReadError)?;
             let srec_str =
                 std::str::from_utf8(&buffer).map_err(Error::BadSrec)?;
-            load_srec(Path::new(SREC_FILE), srec_str)?
+            let (srec, kentry) = load_srec(Path::new(SREC_FILE), srec_str)?;
+
+            let (start_addr, data) = srec_to_binary(&srec, 0xFF)?;
+            (start_addr, data, kentry)
         };
 
         Ok(Self {
             path: filename.as_ref().to_owned(),
             zip: contents,
+            new_files: BTreeMap::new(),
+            start_addr,
             data,
             kentry,
         })
     }
 
-    fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
-        let start_addr =
-            self.data.keys().next().cloned().ok_or(Error::EmptyImage)?;
+    /// Adds a file to the archive
+    ///
+    /// This only modifies the archive in memory; call `overwrite` to persist
+    /// the changes to disk.
+    pub fn add_file(
+        &mut self,
+        name: String,
+        data: Vec<u8>,
+    ) -> Result<(), Error> {
+        match self.new_files.entry(name.clone()) {
+            Entry::Vacant(v) => {
+                v.insert(data);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Error::DuplicateFilename(name)),
+        }
+    }
 
+    fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
         let mut found_header = None;
 
         // The header is located in one of a few locations, depending on MCU
         // and versions of the PAC crates.
         for header_offset in [0xbc, 0xc0, 0x298] {
             let mut header_magic = 0u32;
-            self.read(start_addr + header_offset, &mut header_magic)?;
+            self.read(self.start_addr + header_offset, &mut header_magic)?;
             if header_magic == HEADER_MAGIC {
                 found_header = Some(header_offset);
                 break;
@@ -193,21 +225,21 @@ impl RawHubrisImage {
         };
 
         let mut image_size = 0u32;
-        self.read(start_addr + header_offset + 4, &mut image_size)?;
+        self.read(self.start_addr + header_offset + 4, &mut image_size)?;
 
         let mut caboose_size = 0u32;
-        self.read(start_addr + image_size - 4, &mut caboose_size)?;
+        self.read(self.start_addr + image_size - 4, &mut caboose_size)?;
 
         let mut caboose_magic = 0u32;
-        let caboose_magic_addr = (start_addr + image_size)
+        let caboose_magic_addr = (self.start_addr + image_size)
             .checked_sub(caboose_size)
             .ok_or(Error::MissingCaboose)?;
         self.read(caboose_magic_addr, &mut caboose_magic)?;
         if caboose_magic != CABOOSE_MAGIC {
             return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
         }
-        Ok(start_addr + image_size - caboose_size + 4
-            ..start_addr + image_size - 4)
+        Ok(self.start_addr + image_size - caboose_size + 4
+            ..self.start_addr + image_size - 4)
     }
 
     /// Reads the caboose from local memory
@@ -337,23 +369,32 @@ impl RawHubrisImage {
 
     /// Overwrites the existing archive with our modifications
     ///
-    /// Changes are only made to the `img/final.*` files
-    pub fn overwrite(&self) -> Result<(), Error> {
+    /// Changes are only made to the `img/final.*` files, as well as anything
+    /// listed in `self.new_files`
+    pub fn overwrite(mut self) -> Result<(), Error> {
         // We'll use a temporary file to create modified object files, because
         // we build them with `arm-none-eabi-objcopy`
         let temp_dir = tempfile::tempdir().map_err(Error::TempDirError)?;
-        write_srec(
-            &self.data,
-            self.kentry,
-            &temp_dir.path().join("final.srec"),
-        )?;
+        let srec = binary_to_srec(&self.data, "final.bin", self.kentry)?;
+        write_srec(&srec, self.kentry, &temp_dir.path().join("final.srec"))?;
         translate_srec_to_other_formats(temp_dir.path(), "final")?;
+
+        // Inject all of our new binary files into `self.new_files`.  This means
+        // that they'll be skipped when copying old files over, then added at
+        // the end using the data stored here.
+        for ext in ["srec", "elf", "ihex", "bin"] {
+            let data =
+                std::fs::read(temp_dir.path().join(format!("final.{ext}")))
+                    .map_err(Error::FileReadError)?;
+            let filename = format!("img/final.{ext}");
+            self.add_file(filename, data)?;
+        }
 
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
 
-        // Write to an in-memory buffer
+        // Write to an in-memory buffer, representing a zip file
         let mut out_buf = vec![];
         let out_cursor = Cursor::new(&mut out_buf);
         let mut out = zip::ZipWriter::new(out_cursor);
@@ -368,26 +409,20 @@ impl RawHubrisImage {
                 .enclosed_name()
                 .ok_or_else(|| Error::BadFileInZip(file.name().to_owned()))?
                 .to_owned();
-            let path = outpath.iter().collect::<Vec<_>>();
-            let new_data = if path.len() == 2
-                && path[0].to_str() == Some("img")
-                && path[1].to_str().unwrap().starts_with("final.")
-            {
-                Some(
-                    std::fs::read(temp_dir.path().join(path[1]))
-                        .map_err(Error::FileReadError)?,
-                )
-            } else {
-                None
-            };
 
-            out.start_file(outpath.to_slash().unwrap(), opts)?;
-            if let Some(data) = new_data {
-                out.write_all(&data).unwrap();
-            } else {
+            let path = outpath.to_slash().unwrap();
+            if !self.new_files.contains_key(&path) {
+                out.start_file(path, opts)?;
                 std::io::copy(&mut file, &mut out).unwrap();
             }
         }
+
+        // Write all of our new and modified files
+        for (f, d) in self.new_files.into_iter() {
+            out.start_file(f, opts)?;
+            out.write_all(&d).unwrap();
+        }
+
         out.finish()?;
         drop(out);
 
@@ -402,46 +437,16 @@ impl RawHubrisImage {
         start: u32,
         out: &mut T,
     ) -> Result<(), Error> {
-        // Find the element in the BTreeMap that's just below our start address
-        let lower_bound = *self
-            .data
-            .range(..=start)
-            .rev()
-            .next()
-            .ok_or(Error::BadStartAddress(start))?
-            .0;
-        assert!(start >= lower_bound);
+        let start = start
+            .checked_sub(self.start_addr)
+            .ok_or(Error::BadStartAddress(start))?;
 
-        let mut prev = None;
-        let mut num_bytes = 0;
-
-        // Iterate over ((byte address, byte), output byte)
-        //
-        // Looking at byte address isn't strictly necessary, but it lets us
-        // detect whether the input segments are discontiguous.
-        for ((i, c), out) in self
-            .data
-            .range(lower_bound..)
-            .flat_map(|(i, d)| {
-                d.data.iter().enumerate().map(|(j, c)| (*i as usize + j, c))
-            })
-            .skip((start - lower_bound) as usize)
-            .zip(out.as_bytes_mut())
-        {
-            if let Some(prev) = prev {
-                if i != prev + 1 {
-                    return Err(Error::DiscontiguousSegments);
-                }
-            }
-            prev = Some(i);
-            *out = *c;
-            num_bytes += 1;
+        let slice = &self.data[start as usize..];
+        let out_len = out.as_bytes().len();
+        if slice.len() < out_len {
+            return Err(Error::ReadFailed);
         }
-
-        if num_bytes != (out.as_bytes().len()) {
-            return Err(Error::WriteFailed);
-        }
-
+        out.as_bytes_mut().copy_from_slice(&slice[..out_len]);
         Ok(())
     }
 
@@ -451,43 +456,16 @@ impl RawHubrisImage {
         start: u32,
         input: &T,
     ) -> Result<(), Error> {
-        // Find the element in the BTreeMap that's just below our start address
-        let lower_bound = *self
-            .data
-            .range(..=start)
-            .rev()
-            .next()
-            .ok_or(Error::BadStartAddress(start))?
-            .0;
+        let start = start
+            .checked_sub(self.start_addr)
+            .ok_or(Error::BadStartAddress(start))?;
 
-        let mut prev = None;
-        let mut num_bytes = 0;
-        for ((i, out), c) in self
-            .data
-            .range_mut(lower_bound..)
-            .flat_map(|(i, d)| {
-                d.data
-                    .iter_mut()
-                    .enumerate()
-                    .map(|(j, c)| (*i as usize + j, c))
-            })
-            .skip((start - lower_bound) as usize)
-            .zip(input.as_bytes())
-        {
-            if let Some(prev) = prev {
-                if i != prev + 1 {
-                    return Err(Error::DiscontiguousSegments);
-                }
-            }
-            prev = Some(i);
-            *out = *c;
-            num_bytes += 1;
-        }
-
-        if num_bytes != (input.as_bytes().len()) {
+        let slice = &mut self.data[start as usize..];
+        let input_len = input.as_bytes().len();
+        if slice.len() < input_len {
             return Err(Error::WriteFailed);
         }
-
+        slice[..input_len].copy_from_slice(input.as_bytes());
         Ok(())
     }
 }
@@ -579,43 +557,48 @@ pub fn load_srec(
     panic!("SREC file missing terminating S7 record");
 }
 
-/// Converts a binary file (on the filesystem) into an SREC file
+/// Converts binary data into an SREC-style memory map
 pub fn binary_to_srec(
-    binary: &Path,
+    binary: &[u8],
     name: &str,
     bin_addr: u32,
-    entry: u32,
-    out: &Path,
-) -> Result<(), Error> {
-    let mut srec_out = vec![srec::Record::S0(name.to_string())];
-
-    let binary = std::fs::read(binary)
-        .map_err(|e| Error::FileReadFailed(binary.to_owned(), e))?;
+) -> Result<BTreeMap<u32, LoadSegment>, Error> {
+    let mut srec_out = BTreeMap::new();
 
     let mut addr = bin_addr;
     for chunk in binary.chunks(255 - 5) {
-        srec_out.push(srec::Record::S3(srec::Data {
-            address: srec::Address32(addr),
-            data: chunk.to_vec(),
-        }));
+        srec_out.insert(
+            addr,
+            LoadSegment {
+                source_file: PathBuf::from(name),
+                data: chunk.to_owned(),
+            },
+        );
         addr += chunk.len() as u32;
     }
 
-    let out_sec_count = srec_out.len() - 1; // header
-    if out_sec_count < 0x1_00_00 {
-        srec_out.push(srec::Record::S5(srec::Count16(out_sec_count as u16)));
-    } else if out_sec_count < 0x1_00_00_00 {
-        srec_out.push(srec::Record::S6(srec::Count24(out_sec_count as u32)));
-    } else {
-        panic!("SREC limit of 2^24 output sections exceeded");
+    Ok(srec_out)
+}
+
+/// Converts from an SREC-style memory map to a single binary blob
+pub fn srec_to_binary(
+    srec: &BTreeMap<u32, LoadSegment>,
+    gap_fill: u8,
+) -> Result<(u32, Vec<u8>), Error> {
+    let mut prev: Option<u32> = None;
+    let mut out = vec![];
+    for (addr, data) in srec {
+        if let Some(mut prev) = prev {
+            while prev != *addr {
+                out.push(gap_fill);
+                prev += 1;
+            }
+        }
+        prev = Some(*addr + data.data.len() as u32);
+        out.extend(&data.data);
     }
-
-    srec_out.push(srec::Record::S7(srec::Address32(entry)));
-
-    let srec_image = srec::writer::generate_srec_file(&srec_out);
-    std::fs::write(out, srec_image)
-        .map_err(|e| Error::FileWriteFailed(out.to_owned(), e))?;
-    Ok(())
+    let start = srec.keys().next().cloned().unwrap_or(0);
+    Ok((start, out))
 }
 
 /// Writes a SREC file to the filesystem
