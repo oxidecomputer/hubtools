@@ -1,6 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
+use object::{Object, ObjectSection};
 use path_slash::PathBufExt;
 use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes};
@@ -9,7 +10,6 @@ use std::{
     collections::{btree_map::Entry, BTreeMap},
     io::{Cursor, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 /// A chunk of memory
@@ -19,11 +19,176 @@ pub struct LoadSegment {
     pub data: Vec<u8>,
 }
 
-/// Represents (possibly discontiguous) segments in memory
-pub struct SegmentMap {
-    pub data: BTreeMap<u32, LoadSegment>,
+#[derive(Debug)]
+pub struct RawHubrisImage {
+    pub start_addr: u32,
+    pub data: Vec<u8>,
     pub kentry: u32,
-    pub gap_fill: u8,
+}
+
+impl RawHubrisImage {
+    pub fn from_segments(
+        data: &BTreeMap<u32, LoadSegment>,
+        kentry: u32,
+        gap_fill: u8,
+    ) -> Result<Self, Error> {
+        let mut prev: Option<u32> = None;
+        let mut out = vec![];
+        for (addr, data) in data.iter() {
+            if let Some(mut prev) = prev {
+                while prev != *addr {
+                    out.push(gap_fill);
+                    prev += 1;
+                }
+            }
+            prev = Some(*addr + data.data.len() as u32);
+            out.extend(&data.data);
+        }
+        let start_addr = data.keys().next().cloned().unwrap_or(0);
+        Ok(RawHubrisImage {
+            start_addr,
+            data: out,
+            kentry,
+        })
+    }
+
+    pub fn from_elf(elf_data: &[u8]) -> Result<Self, Error> {
+        // TODO: check for memory range overlaps here
+        let elf = object::read::File::parse(elf_data)?;
+        if elf.format() != object::BinaryFormat::Elf {
+            return Err(Error::NotAnElf(elf.format()));
+        }
+
+        let mut segments: BTreeMap<u32, LoadSegment> = BTreeMap::new();
+        let code_flags = object::SectionFlags::Elf {
+            sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
+        };
+        for s in elf.sections() {
+            if s.flags() == code_flags {
+                segments.insert(
+                    s.address().try_into().unwrap(),
+                    LoadSegment {
+                        source_file: "".into(),
+                        data: s.data()?.to_vec(),
+                    },
+                );
+            }
+        }
+        Self::from_segments(&segments, elf.entry().try_into().unwrap(), 0xFF)
+    }
+
+    /// Converts the raw image to an ELF file
+    ///
+    /// This produces a single PROGBITS section
+    pub fn to_elf(&self) -> Result<Vec<u8>, Error> {
+        let mut out = vec![];
+        let mut w = object::write::elf::Writer::new(
+            object::Endianness::Little,
+            false,
+            &mut out,
+        );
+
+        // The order in which we do things is taken from
+        // `object/src/write/elf/object.rs:elf_write`, but this is dramatically
+        // simpler: we're writing a single section with no relocations, symbols, or
+        // other fanciness (other than .shstrtab)
+        let header = object::write::elf::FileHeader {
+            abi_version: 0,
+            e_entry: self.kentry as u64,
+            e_flags: 0,
+            e_machine: object::elf::EM_ARM,
+            e_type: object::elf::ET_REL,
+            os_abi: object::elf::ELFOSABI_ARM,
+        };
+        w.reserve_file_header();
+
+        // Build a set of names with the same lifetime as the writer
+        let _index = w.reserve_section_index();
+        let offset = w.reserve(self.data.len(), 1);
+        let name = w.add_section_name(b".sec1");
+
+        w.reserve_shstrtab_section_index();
+        w.reserve_shstrtab();
+
+        w.reserve_section_headers();
+
+        w.write_file_header(&header).unwrap();
+        w.write_align(4);
+        w.write(self.data.as_slice());
+
+        w.write_shstrtab();
+        w.write_null_section_header();
+
+        w.write_section_header(&object::write::elf::SectionHeader {
+            name: Some(name),
+            sh_addr: self.start_addr as u64,
+            sh_addralign: 1,
+            sh_entsize: 0,
+            sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
+            sh_info: 0,
+            sh_link: 0,
+            sh_offset: offset as u64,
+            sh_size: self.data.len() as u64,
+            sh_type: object::elf::SHT_PROGBITS,
+        });
+
+        w.write_shstrtab_section_header();
+
+        debug_assert_eq!(w.reserved_len(), w.len());
+
+        Ok(out)
+    }
+
+    pub fn to_binary(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.data.clone())
+    }
+
+    /// Convert SREC to other formats for convenience.
+    pub fn write_all(&self, dist_dir: &Path, name: &str) -> Result<(), Error> {
+        let elf = self.to_elf()?;
+        let elf_file = dist_dir.join(format!("{name}.elf"));
+        std::fs::write(&elf_file, &elf)
+            .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
+
+        let bin_file = dist_dir.join(format!("{name}.bin"));
+        std::fs::write(&bin_file, &self.data)
+            .map_err(|e| Error::FileWriteFailed(bin_file, e))?;
+        Ok(())
+    }
+
+    fn find_chunk(
+        &self,
+        range: std::ops::Range<u32>,
+    ) -> Result<std::ops::Range<usize>, Error> {
+        let start = range
+            .start
+            .checked_sub(self.start_addr)
+            .ok_or_else(|| Error::BadAddress(range.clone()))?
+            as usize;
+        let end = range
+            .end
+            .checked_sub(self.start_addr)
+            .ok_or_else(|| Error::BadAddress(range.clone()))?
+            as usize;
+
+        if end > self.data.len() {
+            return Err(Error::BadAddress(range));
+        }
+        Ok(start..end)
+    }
+
+    pub fn get(&self, range: std::ops::Range<u32>) -> Result<&[u8], Error> {
+        let range = self.find_chunk(range)?;
+        Ok(&self.data[range])
+    }
+
+    pub fn get_mut(
+        &mut self,
+        range: std::ops::Range<u32>,
+    ) -> Result<&mut [u8], Error> {
+        let range = self.find_chunk(range)?;
+        Ok(&mut self.data[range])
+    }
 }
 
 // Defined in the kernel ABI crate
@@ -62,17 +227,8 @@ pub enum Error {
     #[error("file read error: {0}")]
     FileReadError(std::io::Error),
 
-    #[error("could not create temporary dir: {0}")]
-    TempDirError(std::io::Error),
-
     #[error("manifest decoding error: {0}")]
     BadManifest(std::str::Utf8Error),
-
-    #[error("srec decoding error: {0}")]
-    BadSrec(std::str::Utf8Error),
-
-    #[error("image is empty")]
-    EmptyImage,
 
     #[error("could not find magic number {0:#x}")]
     MissingMagic(u32),
@@ -86,26 +242,8 @@ pub enum Error {
     #[error("data is too large ({0:#x}) for caboose ({1:#x})")]
     OversizedData(usize, usize),
 
-    #[error("start address {0:#x} is not available")]
-    BadStartAddress(u32),
-
-    #[error("memory map has discontiguous segments at the target range")]
-    DiscontiguousSegments,
-
-    #[error("failed to write the entire data")]
-    WriteFailed,
-
-    #[error("failed to read the entire data")]
-    ReadFailed,
-
-    #[error("calling objcopy with {0:?} failed: {1}")]
-    ObjcopyCallFailed(Command, std::io::Error),
-
-    #[error("objcopy failed, see output for details")]
-    ObjcopyFailed,
-
-    #[error("srec error: {0}")]
-    SrecError(#[from] srec::ReaderError),
+    #[error("address range {0:#x?} is not available")]
+    BadAddress(std::ops::Range<u32>),
 
     #[error("{0}: record address range {1:#x?} overlaps {2:#x}")]
     MemoryRangeOverlap(String, std::ops::Range<u32>, u32),
@@ -116,11 +254,11 @@ pub enum Error {
     #[error("duplicate filename in zip archive: {0}")]
     DuplicateFilename(String),
 
-    #[error("failed to build ihex file: {0}")]
-    IHexError(ihex::WriterError),
+    #[error("object error: {0}")]
+    ObjectError(#[from] object::Error),
 
-    #[error("start address of ihex chunk at {0:#x} is not aligned")]
-    BadIHexStartAddress(u32),
+    #[error("this is not an ELF file: {0:?}")]
+    NotAnElf(object::BinaryFormat),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -128,7 +266,7 @@ pub enum Error {
 /// Minimal Hubris archive, useful for some basic manipulation of the binary
 /// image within.
 #[derive(Debug)]
-pub struct RawHubrisImage {
+pub struct RawHubrisArchive {
     /// Source path of the Hubris archive on disk
     pub path: PathBuf,
 
@@ -141,17 +279,11 @@ pub struct RawHubrisImage {
     /// call `overwrite` to write it back to disk.
     pub zip: Vec<u8>,
 
-    /// Start address of the raw data (absolute)
-    pub start_addr: u32,
-
     /// Raw data from the image
-    pub data: Vec<u8>,
-
-    /// Kernel entry point (absolute address)
-    pub kentry: u32,
+    pub image: RawHubrisImage,
 }
 
-impl RawHubrisImage {
+impl RawHubrisArchive {
     pub fn load<P: AsRef<Path> + std::fmt::Debug + Copy>(
         filename: P,
     ) -> Result<Self, Error> {
@@ -175,29 +307,21 @@ impl RawHubrisImage {
             }
         }
 
-        let (start_addr, data, kentry) = {
-            const SREC_FILE: &str = "img/final.srec";
-            let mut file = archive.by_name(SREC_FILE).map_err(|e| {
-                Error::MissingFile(e, format!("failed to find '{SREC_FILE:?}'"))
+        let image = {
+            const ELF_FILE: &str = "img/final.elf";
+            let mut file = archive.by_name(ELF_FILE).map_err(|e| {
+                Error::MissingFile(e, format!("failed to find '{ELF_FILE:?}'"))
             })?;
-            let mut buffer = vec![];
-            file.read_to_end(&mut buffer)
-                .map_err(Error::FileReadError)?;
-            let srec_str =
-                std::str::from_utf8(&buffer).map_err(Error::BadSrec)?;
-            let segment_map = load_srec(Path::new(SREC_FILE), srec_str)?;
-
-            let (start_addr, data) = segment_map_to_binary(&segment_map)?;
-            (start_addr, data, segment_map.kentry)
+            let mut elf = vec![];
+            file.read_to_end(&mut elf).map_err(Error::FileReadError)?;
+            RawHubrisImage::from_elf(&elf)?
         };
 
         Ok(Self {
             path: filename.as_ref().to_owned(),
             zip: contents,
             new_files: BTreeMap::new(),
-            start_addr,
-            data,
-            kentry,
+            image,
         })
     }
 
@@ -217,14 +341,19 @@ impl RawHubrisImage {
         }
     }
 
+    fn start_addr(&self) -> u32 {
+        self.image.start_addr
+    }
+
     fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
         let mut found_header = None;
+        let start_addr = self.start_addr();
 
         // The header is located in one of a few locations, depending on MCU
         // and versions of the PAC crates.
         for header_offset in [0xbc, 0xc0, 0x298] {
             let mut header_magic = 0u32;
-            self.read(self.start_addr + header_offset, &mut header_magic)?;
+            self.read(start_addr + header_offset, &mut header_magic)?;
             if header_magic == HEADER_MAGIC {
                 found_header = Some(header_offset);
                 break;
@@ -236,21 +365,21 @@ impl RawHubrisImage {
         };
 
         let mut image_size = 0u32;
-        self.read(self.start_addr + header_offset + 4, &mut image_size)?;
+        self.read(start_addr + header_offset + 4, &mut image_size)?;
 
         let mut caboose_size = 0u32;
-        self.read(self.start_addr + image_size - 4, &mut caboose_size)?;
+        self.read(start_addr + image_size - 4, &mut caboose_size)?;
 
         let mut caboose_magic = 0u32;
-        let caboose_magic_addr = (self.start_addr + image_size)
+        let caboose_magic_addr = (start_addr + image_size)
             .checked_sub(caboose_size)
             .ok_or(Error::MissingCaboose)?;
         self.read(caboose_magic_addr, &mut caboose_magic)?;
         if caboose_magic != CABOOSE_MAGIC {
             return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
         }
-        Ok(self.start_addr + image_size - caboose_size + 4
-            ..self.start_addr + image_size - 4)
+        Ok(start_addr + image_size - caboose_size + 4
+            ..start_addr + image_size - 4)
     }
 
     /// Reads the caboose from local memory
@@ -385,27 +514,11 @@ impl RawHubrisImage {
     /// Changes are only made to the `img/final.*` files, as well as anything
     /// listed in `self.new_files`
     pub fn overwrite(mut self) -> Result<(), Error> {
-        let segment_map = binary_to_segment_map(
-            &self.data,
-            "final.bin",
-            self.start_addr,
-            self.kentry,
-        )?;
-
         // Convert the SREC into all of our canonical file formats
-        self.add_file(
-            "img/final.srec",
-            segment_map_to_srec(&segment_map)?.as_bytes(),
-        )?;
-        self.add_file(
-            "img/final.ihex",
-            segment_map_to_ihex(&segment_map)?.as_bytes(),
-        )?;
-        self.add_file("img/final.elf", &segment_map_to_elf(&segment_map))?;
-        self.add_file(
-            "img/final.bin",
-            &segment_map_to_binary(&segment_map)?.1,
-        )?;
+        let elf = self.image.to_elf()?;
+        self.add_file("img/final.elf", &elf)?;
+        let data = self.image.to_binary()?;
+        self.add_file("img/final.bin", &data)?;
 
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
@@ -454,15 +567,9 @@ impl RawHubrisImage {
         start: u32,
         out: &mut T,
     ) -> Result<(), Error> {
-        let start = start
-            .checked_sub(self.start_addr)
-            .ok_or(Error::BadStartAddress(start))? as usize;
-
-        let chunk = self
-            .data
-            .get(start..start + out.as_bytes().len())
-            .ok_or(Error::ReadFailed)?;
-        out.as_bytes_mut().copy_from_slice(chunk);
+        let size = out.as_bytes().len() as u32;
+        out.as_bytes_mut()
+            .copy_from_slice(self.image.get(start..start + size)?);
         Ok(())
     }
 
@@ -472,278 +579,34 @@ impl RawHubrisImage {
         start: u32,
         input: &T,
     ) -> Result<(), Error> {
-        let start = start
-            .checked_sub(self.start_addr)
-            .ok_or(Error::BadStartAddress(start))? as usize;
-
-        let chunk = self
-            .data
-            .get_mut(start..start + input.as_bytes().len())
-            .ok_or(Error::WriteFailed)?;
-        chunk.copy_from_slice(input.as_bytes());
+        let size = input.as_bytes().len() as u32;
+        self.image
+            .get_mut(start..start + size)?
+            .copy_from_slice(input.as_bytes());
         Ok(())
-    }
-
-    /// Returns a mutable reference to the inner data
-    ///
-    /// Modifications made here are not applied to the on-disk archive until
-    /// `overwrite` is called.
-    pub fn get_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.data
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Miscellaneous utility zone!
 
-/// Convert SREC to other formats for convenience.
+/// Convert a segment map to other formats for convenience.
 pub fn write_all_formats(
-    segment_map: &SegmentMap,
+    segment_map: &BTreeMap<u32, LoadSegment>,
+    kentry: u32,
     dist_dir: &Path,
     name: &str,
 ) -> Result<(), Error> {
-    let elf = segment_map_to_elf(segment_map);
+    let image = RawHubrisImage::from_segments(segment_map, kentry, 0xFF)?;
+
+    let elf = image.to_elf()?;
     let elf_file = dist_dir.join(format!("{name}.elf"));
     std::fs::write(&elf_file, &elf)
         .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
 
-    let (_, bin) = segment_map_to_binary(segment_map)?;
+    let bin = image.to_binary()?;
     let bin_file = dist_dir.join(format!("{name}.bin"));
-    std::fs::write(&bin_file, &bin)
+    std::fs::write(&bin_file, bin)
         .map_err(|e| Error::FileWriteFailed(bin_file, e))?;
-
-    let ihex = segment_map_to_ihex(segment_map)?;
-    let ihex_file = dist_dir.join(format!("{name}.ihex"));
-    std::fs::write(&ihex_file, ihex)
-        .map_err(|e| Error::FileWriteFailed(ihex_file, e))?;
-
     Ok(())
-}
-
-pub fn segment_map_to_ihex(segment_map: &SegmentMap) -> Result<String, Error> {
-    let mut records = vec![];
-
-    for (addr, LoadSegment { data, .. }) in &segment_map.data {
-        for (offset, chunk) in data.chunks(65536).enumerate() {
-            let start_addr: u32 =
-                (*addr as usize + 65536 * offset).try_into().unwrap();
-            if start_addr & 0xFFFF != 0 {
-                return Err(Error::BadIHexStartAddress(start_addr));
-            }
-            records.push(ihex::Record::ExtendedLinearAddress(
-                (start_addr >> 16) as u16,
-            ));
-            for (i, line) in chunk.chunks(16).enumerate() {
-                records.push(ihex::Record::Data {
-                    offset: (i * 16).try_into().unwrap(),
-                    value: line.to_owned(),
-                });
-            }
-        }
-    }
-
-    records.push(ihex::Record::EndOfFile);
-    ihex::create_object_file_representation(&records).map_err(Error::IHexError)
-}
-
-/// Loads an SREC file into a segment map, merging adjacent sections
-pub fn load_srec(input: &Path, srec_text: &str) -> Result<SegmentMap, Error> {
-    let mut output = BTreeMap::new();
-    for record in srec::reader::read_records(srec_text) {
-        let record = record?;
-        match record {
-            srec::Record::S3(data) => {
-                // Check for address overlap
-                let range =
-                    data.address.0..data.address.0 + data.data.len() as u32;
-                if let Some(overlap) = output.range(range.clone()).next() {
-                    return Err(Error::MemoryRangeOverlap(
-                        input.display().to_string(),
-                        range,
-                        *overlap.0,
-                    ));
-                }
-                output.insert(
-                    data.address.0,
-                    LoadSegment {
-                        source_file: input.into(),
-                        data: data.data,
-                    },
-                );
-            }
-            srec::Record::S7(srec::Address32(kentry)) => {
-                let mut merged: BTreeMap<u32, LoadSegment> = BTreeMap::new();
-                let mut prev = None;
-                for (addr, data) in output {
-                    let size = data.data.len();
-                    if prev == Some(addr) {
-                        merged
-                            .values_mut()
-                            .rev()
-                            .next()
-                            .unwrap()
-                            .data
-                            .extend(data.data);
-                    } else {
-                        merged.insert(addr, data);
-                    }
-                    prev = Some(addr + size as u32);
-                }
-                return Ok(SegmentMap {
-                    data: merged,
-                    kentry,
-                    gap_fill: 0xFF,
-                });
-            }
-            _ => (),
-        }
-    }
-    panic!("SREC file missing terminating S7 record");
-}
-
-/// Converts binary data into an SREC-style memory map
-pub fn binary_to_segment_map(
-    binary: &[u8],
-    name: &str,
-    start_addr: u32,
-    kentry: u32,
-) -> Result<SegmentMap, Error> {
-    let mut data = BTreeMap::new();
-
-    data.insert(
-        start_addr,
-        LoadSegment {
-            source_file: PathBuf::from(name),
-            data: binary.to_owned(),
-        },
-    );
-
-    Ok(SegmentMap {
-        data,
-        kentry,
-        gap_fill: 0xFF,
-    })
-}
-
-pub fn segment_map_to_elf(segment_map: &SegmentMap) -> Vec<u8> {
-    let mut out = vec![];
-    let mut w = object::write::elf::Writer::new(
-        object::Endianness::Little,
-        false,
-        &mut out,
-    );
-
-    // The order in which we do things is taken from
-    // `object/src/write/elf/object.rs:elf_write`, but this is dramatically
-    // simpler: we're writing a single section with no relocations, symbols, or
-    // other fanciness (other than .shstrtab)
-    let header = object::write::elf::FileHeader {
-        abi_version: 0,
-        e_entry: segment_map.kentry as u64,
-        e_flags: 0,
-        e_machine: object::elf::EM_ARM,
-        e_type: object::elf::ET_REL,
-        os_abi: object::elf::ELFOSABI_ARM,
-    };
-    w.reserve_file_header();
-
-    // Build a set of names with the same lifetime as the writer
-    let names = (0..segment_map.data.len())
-        .map(|i| format!(".sec{}", i + 1))
-        .collect::<Vec<_>>();
-    let mut sections = vec![];
-    for (i, bin) in segment_map.data.values().enumerate() {
-        let _index = w.reserve_section_index();
-        let offset = w.reserve(bin.data.len(), 1);
-        let name = w.add_section_name(names[i].as_bytes());
-        sections.push((offset, name))
-    }
-
-    w.reserve_shstrtab_section_index();
-    w.reserve_shstrtab();
-
-    w.reserve_section_headers();
-
-    w.write_file_header(&header).unwrap();
-    w.write_align(4);
-    for bin in segment_map.data.values() {
-        w.write(&bin.data);
-    }
-
-    w.write_shstrtab();
-    w.write_null_section_header();
-
-    for ((offset, name), (addr, bin)) in
-        sections.iter().zip(segment_map.data.iter())
-    {
-        w.write_section_header(&object::write::elf::SectionHeader {
-            name: Some(*name),
-            sh_addr: *addr as u64,
-            sh_addralign: 1,
-            sh_entsize: 0,
-            sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
-            sh_info: 0,
-            sh_link: 0,
-            sh_offset: *offset as u64,
-            sh_size: bin.data.len() as u64,
-            sh_type: object::elf::SHT_PROGBITS,
-        });
-    }
-
-    w.write_shstrtab_section_header();
-
-    debug_assert_eq!(w.reserved_len(), w.len());
-
-    out
-}
-
-/// Converts from an SREC-style memory map to a single binary blob
-pub fn segment_map_to_binary(
-    segment_map: &SegmentMap,
-) -> Result<(u32, Vec<u8>), Error> {
-    let mut prev: Option<u32> = None;
-    let mut out = vec![];
-    for (addr, data) in &segment_map.data {
-        if let Some(mut prev) = prev {
-            while prev != *addr {
-                out.push(segment_map.gap_fill);
-                prev += 1;
-            }
-        }
-        prev = Some(*addr + data.data.len() as u32);
-        out.extend(&data.data);
-    }
-    let start = segment_map.data.keys().next().cloned().unwrap_or(0);
-    Ok((start, out))
-}
-
-/// Writes a SREC file to a string
-pub fn segment_map_to_srec(segment_map: &SegmentMap) -> Result<String, Error> {
-    let mut srec_out = vec![srec::Record::S0("hubris".to_string())];
-    for (&base, sec) in &segment_map.data {
-        // SREC record size limit is 255 (0xFF). 32-bit addressed records
-        // additionally contain a four-byte address and one-byte checksum, for a
-        // payload limit of 255 - 5.
-        let mut addr = base;
-        for chunk in sec.data.chunks(255 - 5) {
-            srec_out.push(srec::Record::S3(srec::Data {
-                address: srec::Address32(addr),
-                data: chunk.to_vec(),
-            }));
-            addr += chunk.len() as u32;
-        }
-    }
-    let out_sec_count = srec_out.len() - 1; // header
-    if out_sec_count < 0x1_00_00 {
-        srec_out.push(srec::Record::S5(srec::Count16(out_sec_count as u16)));
-    } else if out_sec_count < 0x1_00_00_00 {
-        srec_out.push(srec::Record::S6(srec::Count24(out_sec_count as u32)));
-    } else {
-        panic!("SREC limit of 2^24 output sections exceeded");
-    }
-
-    srec_out.push(srec::Record::S7(srec::Address32(segment_map.kentry)));
-
-    let srec_image = srec::writer::generate_srec_file(&srec_out);
-    Ok(srec_image)
 }

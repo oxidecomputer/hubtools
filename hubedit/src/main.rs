@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use hubtools::RawHubrisImage;
+use hubtools::RawHubrisArchive;
 
 #[derive(Parser, Debug)]
 #[clap(name = "hubedit", max_term_width = 80)]
@@ -39,7 +39,7 @@ pub enum Command {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut archive = RawHubrisImage::load(&args.archive)?;
+    let mut archive = RawHubrisArchive::load(&args.archive)?;
 
     match args.cmd {
         Command::ReadCaboose => {
