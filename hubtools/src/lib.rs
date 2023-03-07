@@ -52,6 +52,22 @@ impl RawHubrisImage {
         })
     }
 
+    pub fn from_binary(
+        data: &[u8],
+        start_addr: u32,
+        kentry: u32,
+    ) -> Result<Self, Error> {
+        let mut segments = BTreeMap::new();
+        segments.insert(
+            start_addr,
+            LoadSegment {
+                source_file: "".into(),
+                data: data.to_vec(),
+            },
+        );
+        Self::from_segments(&segments, kentry, 0xFF)
+    }
+
     pub fn from_elf(elf_data: &[u8]) -> Result<Self, Error> {
         // TODO: check for memory range overlaps here
         let elf = object::read::File::parse(elf_data)?;
@@ -90,8 +106,8 @@ impl RawHubrisImage {
 
         // The order in which we do things is taken from
         // `object/src/write/elf/object.rs:elf_write`, but this is dramatically
-        // simpler: we're writing a single section with no relocations, symbols, or
-        // other fanciness (other than .shstrtab)
+        // simpler: we're writing a single section with no relocations, symbols,
+        // or other fanciness (other than .shstrtab)
         let header = object::write::elf::FileHeader {
             abi_version: 0,
             e_entry: self.kentry as u64,
