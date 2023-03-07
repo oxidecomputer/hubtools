@@ -23,6 +23,7 @@ pub struct LoadSegment {
 pub struct SegmentMap {
     pub data: BTreeMap<u32, LoadSegment>,
     pub kentry: u32,
+    pub gap_fill: u8,
 }
 
 // Defined in the kernel ABI crate
@@ -186,7 +187,7 @@ impl RawHubrisImage {
                 std::str::from_utf8(&buffer).map_err(Error::BadSrec)?;
             let segment_map = load_srec(Path::new(SREC_FILE), srec_str)?;
 
-            let (start_addr, data) = segment_map_to_binary(&segment_map, 0xFF)?;
+            let (start_addr, data) = segment_map_to_binary(&segment_map)?;
             (start_addr, data, segment_map.kentry)
         };
 
@@ -403,7 +404,7 @@ impl RawHubrisImage {
         self.add_file("img/final.elf", &segment_map_to_elf(&segment_map))?;
         self.add_file(
             "img/final.bin",
-            &segment_map_to_binary(&segment_map, 0xFF)?.1,
+            &segment_map_to_binary(&segment_map)?.1,
         )?;
 
         let cursor = Cursor::new(self.zip.as_slice());
@@ -506,7 +507,7 @@ pub fn write_all_formats(
     std::fs::write(&elf_file, &elf)
         .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
 
-    let (_, bin) = segment_map_to_binary(segment_map, 0xFF)?;
+    let (_, bin) = segment_map_to_binary(segment_map)?;
     let bin_file = dist_dir.join(format!("{name}.bin"));
     std::fs::write(&bin_file, &bin)
         .map_err(|e| Error::FileWriteFailed(bin_file, e))?;
@@ -591,6 +592,7 @@ pub fn load_srec(input: &Path, srec_text: &str) -> Result<SegmentMap, Error> {
                 return Ok(SegmentMap {
                     data: merged,
                     kentry,
+                    gap_fill: 0xFF,
                 });
             }
             _ => (),
@@ -608,16 +610,19 @@ pub fn binary_to_segment_map(
 ) -> Result<SegmentMap, Error> {
     let mut data = BTreeMap::new();
 
-    let mut addr = start_addr;
     data.insert(
-        addr,
+        start_addr,
         LoadSegment {
             source_file: PathBuf::from(name),
             data: binary.to_owned(),
         },
     );
 
-    Ok(SegmentMap { data, kentry })
+    Ok(SegmentMap {
+        data,
+        kentry,
+        gap_fill: 0xFF,
+    })
 }
 
 pub fn segment_map_to_elf(segment_map: &SegmentMap) -> Vec<u8> {
@@ -695,14 +700,13 @@ pub fn segment_map_to_elf(segment_map: &SegmentMap) -> Vec<u8> {
 /// Converts from an SREC-style memory map to a single binary blob
 pub fn segment_map_to_binary(
     segment_map: &SegmentMap,
-    gap_fill: u8,
 ) -> Result<(u32, Vec<u8>), Error> {
     let mut prev: Option<u32> = None;
     let mut out = vec![];
     for (addr, data) in &segment_map.data {
         if let Some(mut prev) = prev {
             while prev != *addr {
-                out.push(gap_fill);
+                out.push(segment_map.gap_fill);
                 prev += 1;
             }
         }
