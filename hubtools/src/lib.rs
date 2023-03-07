@@ -135,6 +135,7 @@ impl RawHubrisImage {
         w.write_shstrtab_section_header();
 
         debug_assert_eq!(w.reserved_len(), w.len());
+        // TODO: add PHDR with load info
 
         Ok(out)
     }
