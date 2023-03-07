@@ -19,6 +19,12 @@ pub struct LoadSegment {
     pub data: Vec<u8>,
 }
 
+/// Represents (possibly discontiguous) segments in memory
+pub struct SegmentMap {
+    pub data: BTreeMap<u32, LoadSegment>,
+    pub kentry: u32,
+}
+
 // Defined in the kernel ABI crate
 const HEADER_MAGIC: u32 = 0x15356637;
 const CABOOSE_MAGIC: u32 = 0xcab0005e;
@@ -108,6 +114,12 @@ pub enum Error {
 
     #[error("duplicate filename in zip archive: {0}")]
     DuplicateFilename(String),
+
+    #[error("failed to build ihex file: {0}")]
+    IHexError(ihex::WriterError),
+
+    #[error("start address of ihex chunk at {0:#x} is not aligned")]
+    BadIHexStartAddress(u32),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -172,10 +184,10 @@ impl RawHubrisImage {
                 .map_err(Error::FileReadError)?;
             let srec_str =
                 std::str::from_utf8(&buffer).map_err(Error::BadSrec)?;
-            let (srec, kentry) = load_srec(Path::new(SREC_FILE), srec_str)?;
+            let segment_map = load_srec(Path::new(SREC_FILE), srec_str)?;
 
-            let (start_addr, data) = srec_to_binary(&srec, 0xFF)?;
-            (start_addr, data, kentry)
+            let (start_addr, data) = segment_map_to_binary(&segment_map, 0xFF)?;
+            (start_addr, data, segment_map.kentry)
         };
 
         Ok(Self {
@@ -192,17 +204,15 @@ impl RawHubrisImage {
     ///
     /// This only modifies the archive in memory; call `overwrite` to persist
     /// the changes to disk.
-    pub fn add_file(
-        &mut self,
-        name: String,
-        data: Vec<u8>,
-    ) -> Result<(), Error> {
-        match self.new_files.entry(name.clone()) {
+    pub fn add_file(&mut self, name: &str, data: &[u8]) -> Result<(), Error> {
+        match self.new_files.entry(name.to_string()) {
             Entry::Vacant(v) => {
-                v.insert(data);
+                v.insert(data.to_vec());
                 Ok(())
             }
-            Entry::Occupied(_) => Err(Error::DuplicateFilename(name)),
+            Entry::Occupied(_) => {
+                Err(Error::DuplicateFilename(name.to_string()))
+            }
         }
     }
 
@@ -374,23 +384,27 @@ impl RawHubrisImage {
     /// Changes are only made to the `img/final.*` files, as well as anything
     /// listed in `self.new_files`
     pub fn overwrite(mut self) -> Result<(), Error> {
-        // We'll use a temporary file to create modified object files, because
-        // we build them with `arm-none-eabi-objcopy`
-        let temp_dir = tempfile::tempdir().map_err(Error::TempDirError)?;
-        let srec = binary_to_srec(&self.data, "final.bin", self.start_addr)?;
-        write_srec(&srec, self.kentry, &temp_dir.path().join("final.srec"))?;
-        translate_srec_to_other_formats(temp_dir.path(), "final")?;
+        let segment_map = binary_to_segment_map(
+            &self.data,
+            "final.bin",
+            self.start_addr,
+            self.kentry,
+        )?;
 
-        // Inject all of our new binary files into `self.new_files`.  This means
-        // that they'll be skipped when copying old files over, then added at
-        // the end using the data stored here.
-        for ext in ["srec", "elf", "ihex", "bin"] {
-            let data =
-                std::fs::read(temp_dir.path().join(format!("final.{ext}")))
-                    .map_err(Error::FileReadError)?;
-            let filename = format!("img/final.{ext}");
-            self.add_file(filename, data)?;
-        }
+        // Convert the SREC into all of our canonical file formats
+        self.add_file(
+            "img/final.srec",
+            segment_map_to_srec(&segment_map)?.as_bytes(),
+        )?;
+        self.add_file(
+            "img/final.ihex",
+            segment_map_to_ihex(&segment_map)?.as_bytes(),
+        )?;
+        self.add_file("img/final.elf", &segment_map_to_elf(&segment_map))?;
+        self.add_file(
+            "img/final.bin",
+            &segment_map_to_binary(&segment_map, 0xFF)?.1,
+        )?;
 
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
@@ -481,60 +495,58 @@ impl RawHubrisImage {
 ////////////////////////////////////////////////////////////////////////////////
 // Miscellaneous utility zone!
 
-fn objcopy_translate_format(
-    in_format: &str,
-    src: &Path,
-    out_format: &str,
-    dest: &Path,
-) -> Result<(), Error> {
-    let mut cmd = Command::new("arm-none-eabi-objcopy");
-    cmd.arg("-I")
-        .arg(in_format)
-        .arg("-O")
-        .arg(out_format)
-        .arg("--gap-fill")
-        .arg("0xFF")
-        .arg(src)
-        .arg(dest);
-
-    let status = cmd.status().map_err(|e| Error::ObjcopyCallFailed(cmd, e))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(Error::ObjcopyFailed)
-    }
-}
-
 /// Convert SREC to other formats for convenience.
-pub fn translate_srec_to_other_formats(
+pub fn write_all_formats(
+    segment_map: &SegmentMap,
     dist_dir: &Path,
     name: &str,
 ) -> Result<(), Error> {
-    let src = dist_dir.join(format!("{}.srec", name));
-    for (out_type, ext) in [
-        ("elf32-littlearm", "elf"),
-        ("ihex", "ihex"),
-        ("binary", "bin"),
-    ] {
-        objcopy_translate_format(
-            "srec",
-            &src,
-            out_type,
-            &dist_dir.join(format!("{}.{}", name, ext)),
-        )?;
-    }
+    let elf = segment_map_to_elf(segment_map);
+    let elf_file = dist_dir.join(format!("{name}.elf"));
+    std::fs::write(&elf_file, &elf)
+        .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
+
+    let (_, bin) = segment_map_to_binary(segment_map, 0xFF)?;
+    let bin_file = dist_dir.join(format!("{name}.bin"));
+    std::fs::write(&bin_file, &bin)
+        .map_err(|e| Error::FileWriteFailed(bin_file, e))?;
+
+    let ihex = segment_map_to_ihex(segment_map)?;
+    let ihex_file = dist_dir.join(format!("{name}.ihex"));
+    std::fs::write(&ihex_file, ihex)
+        .map_err(|e| Error::FileWriteFailed(ihex_file, e))?;
+
     Ok(())
 }
 
-/// Loads an SREC file into the same representation we use for ELF.
-///
-/// Returns a tuple of `(memory, kernel entry)`
-///
-pub fn load_srec(
-    input: &Path,
-    srec_text: &str,
-) -> Result<(BTreeMap<u32, LoadSegment>, u32), Error> {
+pub fn segment_map_to_ihex(segment_map: &SegmentMap) -> Result<String, Error> {
+    let mut records = vec![];
+
+    for (addr, LoadSegment { data, .. }) in &segment_map.data {
+        for (offset, chunk) in data.chunks(65536).enumerate() {
+            let start_addr: u32 =
+                (*addr as usize + 65536 * offset).try_into().unwrap();
+            if start_addr & 0xFFFF != 0 {
+                return Err(Error::BadIHexStartAddress(start_addr));
+            }
+            records.push(ihex::Record::ExtendedLinearAddress(
+                (start_addr >> 16) as u16,
+            ));
+            for (i, line) in chunk.chunks(16).enumerate() {
+                records.push(ihex::Record::Data {
+                    offset: (i * 16).try_into().unwrap(),
+                    value: line.to_owned(),
+                });
+            }
+        }
+    }
+
+    records.push(ihex::Record::EndOfFile);
+    ihex::create_object_file_representation(&records).map_err(Error::IHexError)
+}
+
+/// Loads an SREC file into a segment map, merging adjacent sections
+pub fn load_srec(input: &Path, srec_text: &str) -> Result<SegmentMap, Error> {
     let mut output = BTreeMap::new();
     for record in srec::reader::read_records(srec_text) {
         let record = record?;
@@ -558,7 +570,29 @@ pub fn load_srec(
                     },
                 );
             }
-            srec::Record::S7(srec::Address32(e)) => return Ok((output, e)),
+            srec::Record::S7(srec::Address32(kentry)) => {
+                let mut merged: BTreeMap<u32, LoadSegment> = BTreeMap::new();
+                let mut prev = None;
+                for (addr, data) in output {
+                    let size = data.data.len();
+                    if prev == Some(addr) {
+                        merged
+                            .values_mut()
+                            .rev()
+                            .next()
+                            .unwrap()
+                            .data
+                            .extend(data.data);
+                    } else {
+                        merged.insert(addr, data);
+                    }
+                    prev = Some(addr + size as u32);
+                }
+                return Ok(SegmentMap {
+                    data: merged,
+                    kentry,
+                });
+            }
             _ => (),
         }
     }
@@ -566,31 +600,27 @@ pub fn load_srec(
 }
 
 /// Converts binary data into an SREC-style memory map
-pub fn binary_to_srec(
+pub fn binary_to_segment_map(
     binary: &[u8],
     name: &str,
     start_addr: u32,
-) -> Result<BTreeMap<u32, LoadSegment>, Error> {
-    let mut srec_out = BTreeMap::new();
+    kentry: u32,
+) -> Result<SegmentMap, Error> {
+    let mut data = BTreeMap::new();
 
     let mut addr = start_addr;
-    for chunk in binary.chunks(255 - 5) {
-        srec_out.insert(
-            addr,
-            LoadSegment {
-                source_file: PathBuf::from(name),
-                data: chunk.to_owned(),
-            },
-        );
-        addr += chunk.len() as u32;
-    }
+    data.insert(
+        addr,
+        LoadSegment {
+            source_file: PathBuf::from(name),
+            data: binary.to_owned(),
+        },
+    );
 
-    std::fs::write("lol.elf", binary_to_elf(binary, start_addr, 0x8000119));
-
-    Ok(srec_out)
+    Ok(SegmentMap { data, kentry })
 }
 
-pub fn binary_to_elf(binary: &[u8], start_addr: u32, kentry: u32) -> Vec<u8> {
+pub fn segment_map_to_elf(segment_map: &SegmentMap) -> Vec<u8> {
     let mut out = vec![];
     let mut w = object::write::elf::Writer::new(
         object::Endianness::Little,
@@ -604,7 +634,7 @@ pub fn binary_to_elf(binary: &[u8], start_addr: u32, kentry: u32) -> Vec<u8> {
     // other fanciness (other than .shstrtab)
     let header = object::write::elf::FileHeader {
         abi_version: 0,
-        e_entry: kentry as u64,
+        e_entry: segment_map.kentry as u64,
         e_flags: 0,
         e_machine: object::elf::EM_ARM,
         e_type: object::elf::ET_REL,
@@ -612,9 +642,17 @@ pub fn binary_to_elf(binary: &[u8], start_addr: u32, kentry: u32) -> Vec<u8> {
     };
     w.reserve_file_header();
 
-    let _index = w.reserve_section_index();
-    let offset = w.reserve(binary.len(), 4);
-    let sec1_name = w.add_section_name(b".sec1");
+    // Build a set of names with the same lifetime as the writer
+    let names = (0..segment_map.data.len())
+        .map(|i| format!(".sec{}", i + 1))
+        .collect::<Vec<_>>();
+    let mut sections = vec![];
+    for (i, bin) in segment_map.data.values().enumerate() {
+        let _index = w.reserve_section_index();
+        let offset = w.reserve(bin.data.len(), 1);
+        let name = w.add_section_name(names[i].as_bytes());
+        sections.push((offset, name))
+    }
 
     w.reserve_shstrtab_section_index();
     w.reserve_shstrtab();
@@ -623,23 +661,29 @@ pub fn binary_to_elf(binary: &[u8], start_addr: u32, kentry: u32) -> Vec<u8> {
 
     w.write_file_header(&header).unwrap();
     w.write_align(4);
-    w.write(binary);
+    for bin in segment_map.data.values() {
+        w.write(&bin.data);
+    }
 
     w.write_shstrtab();
     w.write_null_section_header();
 
-    w.write_section_header(&object::write::elf::SectionHeader {
-        name: Some(sec1_name),
-        sh_addr: start_addr as u64,
-        sh_addralign: 1,
-        sh_entsize: 0,
-        sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
-        sh_info: 0,
-        sh_link: 0,
-        sh_offset: offset as u64,
-        sh_size: binary.len() as u64,
-        sh_type: object::elf::SHT_PROGBITS,
-    });
+    for ((offset, name), (addr, bin)) in
+        sections.iter().zip(segment_map.data.iter())
+    {
+        w.write_section_header(&object::write::elf::SectionHeader {
+            name: Some(*name),
+            sh_addr: *addr as u64,
+            sh_addralign: 1,
+            sh_entsize: 0,
+            sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
+            sh_info: 0,
+            sh_link: 0,
+            sh_offset: *offset as u64,
+            sh_size: bin.data.len() as u64,
+            sh_type: object::elf::SHT_PROGBITS,
+        });
+    }
 
     w.write_shstrtab_section_header();
 
@@ -649,13 +693,13 @@ pub fn binary_to_elf(binary: &[u8], start_addr: u32, kentry: u32) -> Vec<u8> {
 }
 
 /// Converts from an SREC-style memory map to a single binary blob
-pub fn srec_to_binary(
-    srec: &BTreeMap<u32, LoadSegment>,
+pub fn segment_map_to_binary(
+    segment_map: &SegmentMap,
     gap_fill: u8,
 ) -> Result<(u32, Vec<u8>), Error> {
     let mut prev: Option<u32> = None;
     let mut out = vec![];
-    for (addr, data) in srec {
+    for (addr, data) in &segment_map.data {
         if let Some(mut prev) = prev {
             while prev != *addr {
                 out.push(gap_fill);
@@ -665,18 +709,14 @@ pub fn srec_to_binary(
         prev = Some(*addr + data.data.len() as u32);
         out.extend(&data.data);
     }
-    let start = srec.keys().next().cloned().unwrap_or(0);
+    let start = segment_map.data.keys().next().cloned().unwrap_or(0);
     Ok((start, out))
 }
 
-/// Writes a SREC file to the filesystem
-pub fn write_srec(
-    sections: &BTreeMap<u32, LoadSegment>,
-    kentry: u32,
-    out: &Path,
-) -> Result<(), Error> {
+/// Writes a SREC file to a string
+pub fn segment_map_to_srec(segment_map: &SegmentMap) -> Result<String, Error> {
     let mut srec_out = vec![srec::Record::S0("hubris".to_string())];
-    for (&base, sec) in sections {
+    for (&base, sec) in &segment_map.data {
         // SREC record size limit is 255 (0xFF). 32-bit addressed records
         // additionally contain a four-byte address and one-byte checksum, for a
         // payload limit of 255 - 5.
@@ -698,10 +738,8 @@ pub fn write_srec(
         panic!("SREC limit of 2^24 output sections exceeded");
     }
 
-    srec_out.push(srec::Record::S7(srec::Address32(kentry)));
+    srec_out.push(srec::Record::S7(srec::Address32(segment_map.kentry)));
 
     let srec_image = srec::writer::generate_srec_file(&srec_out);
-    std::fs::write(out, srec_image)
-        .map_err(|e| Error::FileWriteFailed(out.to_owned(), e))?;
-    Ok(())
+    Ok(srec_image)
 }
