@@ -101,10 +101,11 @@ impl RawHubrisImage {
             os_abi: object::elf::ELFOSABI_ARM,
         };
         w.reserve_file_header();
+        w.reserve_program_headers(1);
 
-        // Build a set of names with the same lifetime as the writer
+        let offset = w.reserve(self.data.len(), 4);
+
         let _index = w.reserve_section_index();
-        let offset = w.reserve(self.data.len(), 1);
         let name = w.add_section_name(b".sec1");
 
         w.reserve_shstrtab_section_index();
@@ -112,8 +113,22 @@ impl RawHubrisImage {
 
         w.reserve_section_headers();
 
+        // Writing happens here!
         w.write_file_header(&header).unwrap();
+        w.write_align_program_headers();
+        w.write_program_header(&object::write::elf::ProgramHeader {
+            p_align: 0x20,
+            p_filesz: self.data.len() as u64,
+            p_memsz: self.data.len() as u64,
+            p_flags: object::elf::PF_R,
+            p_type: object::elf::PT_LOAD,
+            p_offset: offset as u64,
+            p_paddr: self.start_addr as u64,
+            p_vaddr: self.start_addr as u64,
+        });
+
         w.write_align(4);
+        assert_eq!(w.len(), offset);
         w.write(self.data.as_slice());
 
         w.write_shstrtab();
