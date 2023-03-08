@@ -12,13 +12,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// A chunk of memory
-#[derive(Debug, Hash)]
-pub struct LoadSegment {
-    pub source_file: PathBuf,
-    pub data: Vec<u8>,
-}
-
 #[derive(Debug)]
 pub struct RawHubrisImage {
     pub start_addr: u32,
@@ -28,10 +21,11 @@ pub struct RawHubrisImage {
 
 impl RawHubrisImage {
     pub fn from_segments(
-        data: &BTreeMap<u32, LoadSegment>,
+        data: &BTreeMap<u32, Vec<u8>>,
         kentry: u32,
         gap_fill: u8,
     ) -> Result<Self, Error> {
+        // TODO: check for memory range overlaps here
         let mut prev: Option<u32> = None;
         let mut out = vec![];
         for (addr, data) in data.iter() {
@@ -41,8 +35,8 @@ impl RawHubrisImage {
                     prev += 1;
                 }
             }
-            prev = Some(*addr + data.data.len() as u32);
-            out.extend(&data.data);
+            prev = Some(*addr + data.len() as u32);
+            out.extend(data);
         }
         let start_addr = data.keys().next().cloned().unwrap_or(0);
         Ok(RawHubrisImage {
@@ -58,24 +52,17 @@ impl RawHubrisImage {
         kentry: u32,
     ) -> Result<Self, Error> {
         let mut segments = BTreeMap::new();
-        segments.insert(
-            start_addr,
-            LoadSegment {
-                source_file: "".into(),
-                data: data.to_vec(),
-            },
-        );
+        segments.insert(start_addr, data.to_vec());
         Self::from_segments(&segments, kentry, 0xFF)
     }
 
     pub fn from_elf(elf_data: &[u8]) -> Result<Self, Error> {
-        // TODO: check for memory range overlaps here
         let elf = object::read::File::parse(elf_data)?;
         if elf.format() != object::BinaryFormat::Elf {
             return Err(Error::NotAnElf(elf.format()));
         }
 
-        let mut segments: BTreeMap<u32, LoadSegment> = BTreeMap::new();
+        let mut segments: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
         let code_flags = object::SectionFlags::Elf {
             sh_flags: (object::elf::SHF_WRITE | object::elf::SHF_ALLOC) as u64,
         };
@@ -83,10 +70,7 @@ impl RawHubrisImage {
             if s.flags() == code_flags {
                 segments.insert(
                     s.address().try_into().unwrap(),
-                    LoadSegment {
-                        source_file: "".into(),
-                        data: s.data()?.to_vec(),
-                    },
+                    s.data()?.to_vec(),
                 );
             }
         }
@@ -602,28 +586,4 @@ impl RawHubrisArchive {
             .copy_from_slice(input.as_bytes());
         Ok(())
     }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Miscellaneous utility zone!
-
-/// Convert a segment map to other formats for convenience.
-pub fn write_all_formats(
-    segment_map: &BTreeMap<u32, LoadSegment>,
-    kentry: u32,
-    dist_dir: &Path,
-    name: &str,
-) -> Result<(), Error> {
-    let image = RawHubrisImage::from_segments(segment_map, kentry, 0xFF)?;
-
-    let elf = image.to_elf()?;
-    let elf_file = dist_dir.join(format!("{name}.elf"));
-    std::fs::write(&elf_file, &elf)
-        .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
-
-    let bin = image.to_binary()?;
-    let bin_file = dist_dir.join(format!("{name}.bin"));
-    std::fs::write(&bin_file, bin)
-        .map_err(|e| Error::FileWriteFailed(bin_file, e))?;
-    Ok(())
 }
