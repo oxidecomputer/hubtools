@@ -25,20 +25,19 @@ impl RawHubrisImage {
         kentry: u32,
         gap_fill: u8,
     ) -> Result<Self, Error> {
-        // TODO: check for memory range overlaps here
         let mut prev: Option<u32> = None;
         let mut out = vec![];
         for (addr, data) in data.iter() {
-            if let Some(mut prev) = prev {
-                while prev != *addr {
-                    out.push(gap_fill);
-                    prev += 1;
-                }
+            if let Some(prev) = prev {
+                let gap_size = addr
+                    .checked_sub(prev)
+                    .ok_or(Error::MemorySegmentOverlap)?;
+                out.resize(out.len() + gap_size as usize, gap_fill);
             }
             prev = Some(*addr + data.len() as u32);
             out.extend(data);
         }
-        let start_addr = data.keys().next().cloned().unwrap_or(0);
+        let start_addr = data.keys().next().copied().unwrap_or(0);
         Ok(RawHubrisImage {
             start_addr,
             data: out,
@@ -47,12 +46,12 @@ impl RawHubrisImage {
     }
 
     pub fn from_binary(
-        data: &[u8],
+        data: Vec<u8>,
         start_addr: u32,
         kentry: u32,
     ) -> Result<Self, Error> {
         let mut segments = BTreeMap::new();
-        segments.insert(start_addr, data.to_vec());
+        segments.insert(start_addr, data);
         Self::from_segments(&segments, kentry, 0xFF)
     }
 
@@ -150,7 +149,6 @@ impl RawHubrisImage {
         w.write_shstrtab_section_header();
 
         debug_assert_eq!(w.reserved_len(), w.len());
-        // TODO: add PHDR with load info
 
         Ok(out)
     }
@@ -275,6 +273,9 @@ pub enum Error {
 
     #[error("this is not an ELF file: {0:?}")]
     NotAnElf(object::BinaryFormat),
+
+    #[error("memory segments are overlapping")]
+    MemorySegmentOverlap,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
