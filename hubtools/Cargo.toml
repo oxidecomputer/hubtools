@@ -4,13 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-path-slash.version = "0.1"
-srec.version = "0.2.0"
-tempfile.version = "3"
-thiserror.version = "1"
-toml.version = "0.7"
-zerocopy.version = "0.6"
-zip.version = "0.5.13"
+object = { version = "0.30", default-features = false, features = ["write", "read"] }
+path-slash = "0.1"
+thiserror = "1"
+toml = "0.7"
+zerocopy = "0.6"
+zip = "0.5.13"
 
 tlvc.git = "https://github.com/oxidecomputer/tlvc"
 tlvc-text.git = "https://github.com/oxidecomputer/tlvc"
