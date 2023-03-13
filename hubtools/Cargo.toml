@@ -9,7 +9,7 @@ path-slash = "0.1"
 thiserror = "1"
 toml = "0.7"
 zerocopy = "0.6"
-zip = "0.5.13"
+zip = "0.6"
 
 tlvc.git = "https://github.com/oxidecomputer/tlvc"
 tlvc-text.git = "https://github.com/oxidecomputer/tlvc"
