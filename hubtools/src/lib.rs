@@ -272,6 +272,9 @@ pub enum Error {
     #[error("bad TOML file: {0}")]
     BadToml(toml::de::Error),
 
+    #[error("wrong type for entry in TOML file")]
+    BadTomlType,
+
     #[error("duplicate filename in zip archive: {0}")]
     DuplicateFilename(String),
 
@@ -298,6 +301,9 @@ pub enum Error {
 
     #[error("LPC55 support error: {0}")]
     Lpc55(#[from] lpc55_sign::Error),
+
+    #[error("wrong chip: expected lpc55, got {0}")]
+    WrongChip(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -498,19 +504,19 @@ impl RawHubrisArchive {
 
         let board = manifest
             .as_table()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .get("board")
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .as_str()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .to_owned();
         let name = manifest
             .as_table()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .get("name")
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .as_str()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .to_owned();
 
         let mut chunks = vec![
@@ -657,6 +663,46 @@ impl RawHubrisArchive {
 
         lpc55_sign::verify::init_verify_logger(verbose);
         lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)?;
+
+        Ok(())
+    }
+
+    pub fn sign(
+        &mut self,
+        signing_certs: Vec<Vec<u8>>,
+        root_certs: Vec<Vec<u8>>,
+        private_key: &str,
+        execution_address: u32,
+    ) -> Result<(), Error> {
+        let manifest = self.extract_file("app.toml")?;
+        let manifest: toml::Value = toml::from_str(
+            std::str::from_utf8(&manifest).map_err(Error::BadManifest)?,
+        )
+        .map_err(Error::BadToml)?;
+        let chip = manifest
+            .as_table()
+            .ok_or(Error::BadTomlType)?
+            .get("chip")
+            .ok_or(Error::BadTomlType)?
+            .as_str()
+            .ok_or(Error::BadTomlType)?
+            .to_owned();
+
+        if !chip.contains("lpc55") {
+            return Err(Error::WrongChip(chip));
+        }
+
+        // Overwrite the image with a signed blob
+        let stamped = lpc55_sign::signed_image::stamp_image(
+            self.image.data.clone(),
+            signing_certs,
+            root_certs,
+            execution_address,
+        )?;
+        let signed =
+            lpc55_sign::signed_image::sign_image(&stamped, private_key)?;
+
+        self.image.data = signed;
 
         Ok(())
     }
