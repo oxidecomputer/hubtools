@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 object = { version = "0.30", default-features = false, features = ["write", "read"] }
+packed_struct = { version = "0.10", default-features = false, features = ["std"] }
 path-slash = { version = "0.1", default-features = false }
 thiserror = { version = "1", default-features = false }
 toml = { version = "0.7", default-features = false, features = ["parse"] }
@@ -13,4 +14,5 @@ zip = { version = "0.6", default-features = false, features = ["bzip2"] }
 
 tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
 tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
-lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false }
+lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, branch = "library-ify" }
+lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, branch = "library-ify" }

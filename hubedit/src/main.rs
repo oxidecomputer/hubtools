@@ -35,6 +35,10 @@ pub enum Command {
         #[clap(short, long)]
         force: bool,
     },
+    VerifyImage {
+        #[clap(short, long)]
+        verbose: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -84,6 +88,9 @@ fn main() -> Result<()> {
             }
             archive.erase_caboose()?;
             archive.overwrite()?;
+        }
+        Command::VerifyImage { verbose } => {
+            archive.verify(verbose)?;
         }
     }
 

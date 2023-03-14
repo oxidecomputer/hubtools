@@ -286,6 +286,18 @@ pub enum Error {
 
     #[error("caboose is not located at the end of the image; is it signed?")]
     BadCabooseLocation,
+
+    #[error("Bad CMPA size: expected 512 bytes, got {0}")]
+    BadCMPASize(usize),
+
+    #[error("Bad CFPA size: expected 512 bytes, got {0}")]
+    BadCFPASize(usize),
+
+    #[error("packed struct error: {0}")]
+    PackedStruct(#[from] packed_struct::PackingError),
+
+    #[error("LPC55 support error: {0}")]
+    Lpc55(#[from] lpc55_sign::Error),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -336,9 +348,9 @@ impl RawHubrisArchive {
 
         let image = {
             const ELF_FILE: &str = "img/final.elf";
-            let mut file = archive.by_name(ELF_FILE).map_err(|e| {
-                Error::MissingFile(e, format!("failed to find '{ELF_FILE:?}'"))
-            })?;
+            let mut file = archive
+                .by_name(ELF_FILE)
+                .map_err(|e| Error::MissingFile(e, ELF_FILE.to_string()))?;
             let mut elf = vec![];
             file.read_to_end(&mut elf).map_err(Error::FileReadError)?;
             RawHubrisImage::from_elf(&elf)?
@@ -422,9 +434,9 @@ impl RawHubrisArchive {
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
-        let mut file = archive.by_name(name).map_err(|e| {
-            Error::MissingFile(e, format!("failed to find '{name:?}'"))
-        })?;
+        let mut file = archive
+            .by_name(name)
+            .map_err(|e| Error::MissingFile(e, name.to_string()))?;
         let mut buffer = vec![];
         file.read_to_end(&mut buffer)
             .map_err(Error::FileReadError)?;
@@ -619,6 +631,33 @@ impl RawHubrisArchive {
         self.image
             .get_mut(start..start + size)?
             .copy_from_slice(input.as_bytes());
+        Ok(())
+    }
+
+    /// Verifies the signature of an LPC55 image
+    ///
+    /// Results are printed to `stderr` using `log`
+    pub fn verify(&self, verbose: bool) -> Result<(), Error> {
+        // CMPA and CFPA are included in the archive (for now)
+        let cmpa_bytes = self.extract_file("img/CMPA.bin")?;
+        if cmpa_bytes.len() != 512 {
+            return Err(Error::BadCMPASize(cmpa_bytes.len()));
+        }
+        let mut cmpa_array = [0u8; 512];
+        cmpa_array.copy_from_slice(&cmpa_bytes);
+        let cmpa = lpc55_areas::CMPAPage::from_bytes(&cmpa_array)?;
+
+        let cfpa_bytes = self.extract_file("img/CFPA.bin")?;
+        if cfpa_bytes.len() != 512 {
+            return Err(Error::BadCFPASize(cfpa_bytes.len()));
+        }
+        let mut cfpa_array = [0u8; 512];
+        cfpa_array.copy_from_slice(&cfpa_bytes);
+        let cfpa = lpc55_areas::CFPAPage::from_bytes(&cfpa_array)?;
+
+        lpc55_sign::verify::init_verify_logger(verbose);
+        lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)?;
+
         Ok(())
     }
 }
