@@ -13,3 +13,4 @@ zip = { version = "0.6", default-features = false, features = ["bzip2"] }
 
 tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
 tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
+lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false }

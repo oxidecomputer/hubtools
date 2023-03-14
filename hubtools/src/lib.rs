@@ -153,6 +153,7 @@ impl RawHubrisImage {
         Ok(out)
     }
 
+    /// Converts to a raw binary file
     pub fn to_binary(&self) -> Result<Vec<u8>, Error> {
         Ok(self.data.clone())
     }
@@ -170,6 +171,10 @@ impl RawHubrisImage {
         Ok(())
     }
 
+    /// Converts from an absolute address range to relative addresses
+    ///
+    /// The input addresses should be based on chip memory; the returned range
+    /// can be used as an index into `self.data`
     fn find_chunk(
         &self,
         range: std::ops::Range<u32>,
@@ -191,11 +196,13 @@ impl RawHubrisImage {
         Ok(start..end)
     }
 
+    /// Gets a slice from the image, using absolute addresses
     pub fn get(&self, range: std::ops::Range<u32>) -> Result<&[u8], Error> {
         let range = self.find_chunk(range)?;
         Ok(&self.data[range])
     }
 
+    /// Gets a mutable slice from the image, using absolute addresses
     pub fn get_mut(
         &mut self,
         range: std::ops::Range<u32>,
@@ -276,6 +283,9 @@ pub enum Error {
 
     #[error("memory segments are overlapping")]
     MemorySegmentOverlap,
+
+    #[error("caboose is not located at the end of the image; is it signed?")]
+    BadCabooseLocation,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -427,10 +437,15 @@ impl RawHubrisArchive {
     pub fn write_caboose(&mut self, data: &[u8]) -> Result<(), Error> {
         // Skip the start and end word, which are markers
         let caboose_range = self.caboose_range()?;
-        if data.len() > caboose_range.len() {
-            return Err(Error::OversizedData(data.len(), caboose_range.len()));
+
+        let end = caboose_range.end - self.image.start_addr;
+        if end as usize != self.image.data.len() - 4 {
+            Err(Error::BadCabooseLocation)
+        } else if data.len() > caboose_range.len() {
+            Err(Error::OversizedData(data.len(), caboose_range.len()))
+        } else {
+            self.write(caboose_range.start, data)
         }
-        self.write(caboose_range.start, data)
     }
 
     /// Writes the given version (and nothing else) to the caboose
@@ -516,6 +531,10 @@ impl RawHubrisArchive {
     /// [`overwrite`] must be called to write these changes back to disk.
     pub fn erase_caboose(&mut self) -> Result<(), Error> {
         let caboose_range = self.caboose_range()?;
+        let end = caboose_range.end - self.image.start_addr;
+        if end as usize != self.image.data.len() - 4 {
+            return Err(Error::BadCabooseLocation);
+        }
         let data = vec![0xFFu8; caboose_range.len()];
         self.write(caboose_range.start, data.as_slice())
     }
