@@ -720,10 +720,21 @@ impl RawHubrisArchive {
     pub fn set_cmpa(
         &mut self,
         dice: lpc55_sign::signed_image::DiceArgs,
+        enable_secure_boot: bool,
+        debug: lpc55_areas::DebugSettings,
+        default_isp: lpc55_areas::DefaultIsp,
+        speed: lpc55_areas::BootSpeed,
         root_certs: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
         let rkth = lpc55_sign::signed_image::root_key_table_hash(root_certs)?;
-        let cmpa = lpc55_sign::signed_image::generate_cmpa(dice, rkth)?;
+        let cmpa = lpc55_sign::signed_image::generate_cmpa(
+            dice,
+            enable_secure_boot,
+            debug,
+            default_isp,
+            speed,
+            rkth,
+        )?;
         const CMPA_FILE: &str = "img/CMPA.bin";
         if self.new_files.contains_key(CMPA_FILE)
             || self.extract_file(CMPA_FILE).is_ok()
@@ -739,8 +750,12 @@ impl RawHubrisArchive {
     ///
     /// This modifies local data in memory; call `self.overwrite` to persist
     /// changes back to the archive on disk.
-    pub fn set_cfpa(&mut self, root_certs: Vec<Vec<u8>>) -> Result<(), Error> {
-        let cfpa = lpc55_sign::signed_image::generate_cfpa(root_certs)?;
+    pub fn set_cfpa(
+        &mut self,
+        settings: lpc55_areas::DebugSettings,
+        revoke: [lpc55_areas::ROTKeyStatus; 4],
+    ) -> Result<(), Error> {
+        let cfpa = lpc55_sign::signed_image::generate_cfpa(settings, revoke)?;
         const CFPA_FILE: &str = "img/CFPA.bin";
         if self.new_files.contains_key(CFPA_FILE)
             || self.extract_file(CFPA_FILE).is_ok()
