@@ -211,6 +211,28 @@ impl RawHubrisImage {
         let range = self.find_chunk(range)?;
         Ok(&mut self.data[range])
     }
+
+    pub fn sign(
+        &mut self,
+        signing_certs: Vec<Vec<u8>>,
+        root_certs: Vec<Vec<u8>>,
+        private_key: &str,
+        execution_address: u32,
+    ) -> Result<(), Error> {
+        // Overwrite the image with a signed blob
+        let stamped = lpc55_sign::signed_image::stamp_image(
+            self.data.clone(),
+            signing_certs,
+            root_certs,
+            execution_address,
+        )?;
+        let signed =
+            lpc55_sign::signed_image::sign_image(&stamped, private_key)?;
+
+        self.data = signed;
+
+        Ok(())
+    }
 }
 
 // Defined in the kernel ABI crate
@@ -697,19 +719,12 @@ impl RawHubrisArchive {
             return Err(Error::WrongChip(chip));
         }
 
-        // Overwrite the image with a signed blob
-        let stamped = lpc55_sign::signed_image::stamp_image(
-            self.image.data.clone(),
+        self.image.sign(
             signing_certs,
             root_certs,
+            private_key,
             execution_address,
-        )?;
-        let signed =
-            lpc55_sign::signed_image::sign_image(&stamped, private_key)?;
-
-        self.image.data = signed;
-
-        Ok(())
+        )
     }
 
     /// Adds `img/CMPA.bin` to the archive, generated based on a DICE
