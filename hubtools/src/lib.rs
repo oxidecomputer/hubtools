@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 use object::{Object, ObjectSection};
+use packed_struct::PackedStruct;
 use path_slash::PathBufExt;
 use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes};
@@ -667,6 +668,10 @@ impl RawHubrisArchive {
         Ok(())
     }
 
+    /// Signs the given image with a chain of one-or-more certificates
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
     pub fn sign(
         &mut self,
         signing_certs: Vec<Vec<u8>>,
@@ -704,6 +709,46 @@ impl RawHubrisArchive {
 
         self.image.data = signed;
 
+        Ok(())
+    }
+
+    /// Adds `img/CMPA.bin` to the archive, generated based on a DICE
+    /// configuration and set of root certificates.
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
+    pub fn set_cmpa(
+        &mut self,
+        dice: lpc55_sign::signed_image::DiceArgs,
+        root_certs: Vec<Vec<u8>>,
+    ) -> Result<(), Error> {
+        let rkth = lpc55_sign::signed_image::root_key_table_hash(root_certs)?;
+        let cmpa = lpc55_sign::signed_image::generate_cmpa(dice, rkth)?;
+        const CMPA_FILE: &str = "img/CMPA.bin";
+        if self.new_files.contains_key(CMPA_FILE)
+            || self.extract_file(CMPA_FILE).is_ok()
+        {
+            return Err(Error::DuplicateFilename(CMPA_FILE.to_owned()));
+        }
+        self.new_files
+            .insert(CMPA_FILE.to_string(), cmpa.pack()?.to_vec());
+        Ok(())
+    }
+
+    /// Adds `img/CFPA.bin` to the archive, based on a set of root certificates.
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
+    pub fn set_cfpa(&mut self, root_certs: Vec<Vec<u8>>) -> Result<(), Error> {
+        let cfpa = lpc55_sign::signed_image::generate_cfpa(root_certs)?;
+        const CFPA_FILE: &str = "img/CFPA.bin";
+        if self.new_files.contains_key(CFPA_FILE)
+            || self.extract_file(CFPA_FILE).is_ok()
+        {
+            return Err(Error::DuplicateFilename(CFPA_FILE.to_owned()));
+        }
+        self.new_files
+            .insert(CFPA_FILE.to_string(), cfpa.pack()?.to_vec());
         Ok(())
     }
 }
