@@ -739,6 +739,7 @@ impl RawHubrisArchive {
         debug: lpc55_areas::DebugSettings,
         default_isp: lpc55_areas::DefaultIsp,
         speed: lpc55_areas::BootSpeed,
+        boot_error_pin: lpc55_areas::BootErrorPin,
         root_certs: Vec<Vec<u8>>,
     ) -> Result<(), Error> {
         let rkth = lpc55_sign::signed_image::root_key_table_hash(root_certs)?;
@@ -748,6 +749,7 @@ impl RawHubrisArchive {
             debug,
             default_isp,
             speed,
+            boot_error_pin,
             rkth,
         )?;
         const CMPA_FILE: &str = "img/CMPA.bin";
