@@ -163,7 +163,7 @@ impl RawHubrisImage {
     pub fn write_all(&self, dist_dir: &Path, name: &str) -> Result<(), Error> {
         let elf = self.to_elf()?;
         let elf_file = dist_dir.join(format!("{name}.elf"));
-        std::fs::write(&elf_file, &elf)
+        std::fs::write(&elf_file, elf)
             .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
 
         let bin_file = dist_dir.join(format!("{name}.bin"));
@@ -350,6 +350,9 @@ pub struct RawHubrisArchive {
     /// Raw data from the image
     pub image: RawHubrisImage,
 }
+
+const CMPA_FILE: &str = "img/CMPA.bin";
+const CFPA_FILE: &str = "img/CFPA.bin";
 
 impl RawHubrisArchive {
     pub fn load<P: AsRef<Path> + std::fmt::Debug + Copy>(
@@ -669,19 +672,15 @@ impl RawHubrisArchive {
     pub fn verify(&self, verbose: bool) -> Result<(), Error> {
         // CMPA and CFPA are included in the archive (for now)
         let cmpa_bytes = self.extract_file("img/CMPA.bin")?;
-        if cmpa_bytes.len() != 512 {
-            return Err(Error::BadCMPASize(cmpa_bytes.len()));
-        }
-        let mut cmpa_array = [0u8; 512];
-        cmpa_array.copy_from_slice(&cmpa_bytes);
+        let cmpa_array: Box<[u8; 512]> = cmpa_bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| Error::BadCMPASize(v.len()))?;
         let cmpa = lpc55_areas::CMPAPage::from_bytes(&cmpa_array)?;
 
         let cfpa_bytes = self.extract_file("img/CFPA.bin")?;
-        if cfpa_bytes.len() != 512 {
-            return Err(Error::BadCFPASize(cfpa_bytes.len()));
-        }
-        let mut cfpa_array = [0u8; 512];
-        cfpa_array.copy_from_slice(&cfpa_bytes);
+        let cfpa_array: Box<[u8; 512]> = cfpa_bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| Error::BadCFPASize(v.len()))?;
         let cfpa = lpc55_areas::CFPAPage::from_bytes(&cfpa_array)?;
 
         lpc55_sign::verify::init_verify_logger(verbose);
@@ -752,7 +751,6 @@ impl RawHubrisArchive {
             boot_error_pin,
             rkth,
         )?;
-        const CMPA_FILE: &str = "img/CMPA.bin";
         if self.new_files.contains_key(CMPA_FILE)
             || self.extract_file(CMPA_FILE).is_ok()
         {
@@ -773,7 +771,6 @@ impl RawHubrisArchive {
         revoke: [lpc55_areas::ROTKeyStatus; 4],
     ) -> Result<(), Error> {
         let cfpa = lpc55_sign::signed_image::generate_cfpa(settings, revoke)?;
-        const CFPA_FILE: &str = "img/CFPA.bin";
         if self.new_files.contains_key(CFPA_FILE)
             || self.extract_file(CFPA_FILE).is_ok()
         {

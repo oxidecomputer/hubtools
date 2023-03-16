@@ -2,6 +2,7 @@
 name = "hubtools"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.66"
 
 [dependencies]
 object = { version = "0.30", default-features = false, features = ["write", "read"] }
