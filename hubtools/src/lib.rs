@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 use object::{Object, ObjectSection};
+use packed_struct::PackedStruct;
 use path_slash::PathBufExt;
 use thiserror::Error;
 use zerocopy::{AsBytes, FromBytes};
@@ -153,6 +154,7 @@ impl RawHubrisImage {
         Ok(out)
     }
 
+    /// Converts to a raw binary file
     pub fn to_binary(&self) -> Result<Vec<u8>, Error> {
         Ok(self.data.clone())
     }
@@ -161,7 +163,7 @@ impl RawHubrisImage {
     pub fn write_all(&self, dist_dir: &Path, name: &str) -> Result<(), Error> {
         let elf = self.to_elf()?;
         let elf_file = dist_dir.join(format!("{name}.elf"));
-        std::fs::write(&elf_file, &elf)
+        std::fs::write(&elf_file, elf)
             .map_err(|e| Error::FileWriteFailed(elf_file, e))?;
 
         let bin_file = dist_dir.join(format!("{name}.bin"));
@@ -170,6 +172,10 @@ impl RawHubrisImage {
         Ok(())
     }
 
+    /// Converts from an absolute address range to relative addresses
+    ///
+    /// The input addresses should be based on chip memory; the returned range
+    /// can be used as an index into `self.data`
     fn find_chunk(
         &self,
         range: std::ops::Range<u32>,
@@ -191,17 +197,41 @@ impl RawHubrisImage {
         Ok(start..end)
     }
 
+    /// Gets a slice from the image, using absolute addresses
     pub fn get(&self, range: std::ops::Range<u32>) -> Result<&[u8], Error> {
         let range = self.find_chunk(range)?;
         Ok(&self.data[range])
     }
 
+    /// Gets a mutable slice from the image, using absolute addresses
     pub fn get_mut(
         &mut self,
         range: std::ops::Range<u32>,
     ) -> Result<&mut [u8], Error> {
         let range = self.find_chunk(range)?;
         Ok(&mut self.data[range])
+    }
+
+    pub fn sign(
+        &mut self,
+        signing_certs: Vec<Vec<u8>>,
+        root_certs: Vec<Vec<u8>>,
+        private_key: &str,
+        execution_address: u32,
+    ) -> Result<(), Error> {
+        // Overwrite the image with a signed blob
+        let stamped = lpc55_sign::signed_image::stamp_image(
+            self.data.clone(),
+            signing_certs,
+            root_certs,
+            execution_address,
+        )?;
+        let signed =
+            lpc55_sign::signed_image::sign_image(&stamped, private_key)?;
+
+        self.data = signed;
+
+        Ok(())
     }
 }
 
@@ -265,6 +295,9 @@ pub enum Error {
     #[error("bad TOML file: {0}")]
     BadToml(toml::de::Error),
 
+    #[error("wrong type for entry in TOML file")]
+    BadTomlType,
+
     #[error("duplicate filename in zip archive: {0}")]
     DuplicateFilename(String),
 
@@ -276,6 +309,24 @@ pub enum Error {
 
     #[error("memory segments are overlapping")]
     MemorySegmentOverlap,
+
+    #[error("caboose is not located at the end of the image; is it signed?")]
+    BadCabooseLocation,
+
+    #[error("Bad CMPA size: expected 512 bytes, got {0}")]
+    BadCMPASize(usize),
+
+    #[error("Bad CFPA size: expected 512 bytes, got {0}")]
+    BadCFPASize(usize),
+
+    #[error("packed struct error: {0}")]
+    PackedStruct(#[from] packed_struct::PackingError),
+
+    #[error("LPC55 support error: {0}")]
+    Lpc55(#[from] lpc55_sign::Error),
+
+    #[error("wrong chip: expected lpc55, got {0}")]
+    WrongChip(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -299,6 +350,9 @@ pub struct RawHubrisArchive {
     /// Raw data from the image
     pub image: RawHubrisImage,
 }
+
+const CMPA_FILE: &str = "img/CMPA.bin";
+const CFPA_FILE: &str = "img/CFPA.bin";
 
 impl RawHubrisArchive {
     pub fn load<P: AsRef<Path> + std::fmt::Debug + Copy>(
@@ -326,9 +380,9 @@ impl RawHubrisArchive {
 
         let image = {
             const ELF_FILE: &str = "img/final.elf";
-            let mut file = archive.by_name(ELF_FILE).map_err(|e| {
-                Error::MissingFile(e, format!("failed to find '{ELF_FILE:?}'"))
-            })?;
+            let mut file = archive
+                .by_name(ELF_FILE)
+                .map_err(|e| Error::MissingFile(e, ELF_FILE.to_string()))?;
             let mut elf = vec![];
             file.read_to_end(&mut elf).map_err(Error::FileReadError)?;
             RawHubrisImage::from_elf(&elf)?
@@ -412,9 +466,9 @@ impl RawHubrisArchive {
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
-        let mut file = archive.by_name(name).map_err(|e| {
-            Error::MissingFile(e, format!("failed to find '{name:?}'"))
-        })?;
+        let mut file = archive
+            .by_name(name)
+            .map_err(|e| Error::MissingFile(e, name.to_string()))?;
         let mut buffer = vec![];
         file.read_to_end(&mut buffer)
             .map_err(Error::FileReadError)?;
@@ -427,10 +481,15 @@ impl RawHubrisArchive {
     pub fn write_caboose(&mut self, data: &[u8]) -> Result<(), Error> {
         // Skip the start and end word, which are markers
         let caboose_range = self.caboose_range()?;
-        if data.len() > caboose_range.len() {
-            return Err(Error::OversizedData(data.len(), caboose_range.len()));
+
+        let end = caboose_range.end - self.image.start_addr;
+        if end as usize != self.image.data.len() - 4 {
+            Err(Error::BadCabooseLocation)
+        } else if data.len() > caboose_range.len() {
+            Err(Error::OversizedData(data.len(), caboose_range.len()))
+        } else {
+            self.write(caboose_range.start, data)
         }
-        self.write(caboose_range.start, data)
     }
 
     /// Writes the given version (and nothing else) to the caboose
@@ -471,19 +530,19 @@ impl RawHubrisArchive {
 
         let board = manifest
             .as_table()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .get("board")
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .as_str()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .to_owned();
         let name = manifest
             .as_table()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .get("name")
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .as_str()
-            .unwrap()
+            .ok_or(Error::BadTomlType)?
             .to_owned();
 
         let mut chunks = vec![
@@ -516,6 +575,10 @@ impl RawHubrisArchive {
     /// [`overwrite`] must be called to write these changes back to disk.
     pub fn erase_caboose(&mut self) -> Result<(), Error> {
         let caboose_range = self.caboose_range()?;
+        let end = caboose_range.end - self.image.start_addr;
+        if end as usize != self.image.data.len() - 4 {
+            return Err(Error::BadCabooseLocation);
+        }
         let data = vec![0xFFu8; caboose_range.len()];
         self.write(caboose_range.start, data.as_slice())
     }
@@ -600,6 +663,121 @@ impl RawHubrisArchive {
         self.image
             .get_mut(start..start + size)?
             .copy_from_slice(input.as_bytes());
+        Ok(())
+    }
+
+    /// Verifies the signature of an LPC55 image
+    ///
+    /// Results are printed to `stderr` using `log`
+    pub fn verify(&self, verbose: bool) -> Result<(), Error> {
+        // CMPA and CFPA are included in the archive (for now)
+        let cmpa_bytes = self.extract_file("img/CMPA.bin")?;
+        let cmpa_array: Box<[u8; 512]> = cmpa_bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| Error::BadCMPASize(v.len()))?;
+        let cmpa = lpc55_areas::CMPAPage::from_bytes(&cmpa_array)?;
+
+        let cfpa_bytes = self.extract_file("img/CFPA.bin")?;
+        let cfpa_array: Box<[u8; 512]> = cfpa_bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| Error::BadCFPASize(v.len()))?;
+        let cfpa = lpc55_areas::CFPAPage::from_bytes(&cfpa_array)?;
+
+        lpc55_sign::verify::init_verify_logger(verbose);
+        lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)?;
+
+        Ok(())
+    }
+
+    /// Signs the given image with a chain of one-or-more certificates
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
+    pub fn sign(
+        &mut self,
+        signing_certs: Vec<Vec<u8>>,
+        root_certs: Vec<Vec<u8>>,
+        private_key: &str,
+        execution_address: u32,
+    ) -> Result<(), Error> {
+        let manifest = self.extract_file("app.toml")?;
+        let manifest: toml::Value = toml::from_str(
+            std::str::from_utf8(&manifest).map_err(Error::BadManifest)?,
+        )
+        .map_err(Error::BadToml)?;
+        let chip = manifest
+            .as_table()
+            .ok_or(Error::BadTomlType)?
+            .get("chip")
+            .ok_or(Error::BadTomlType)?
+            .as_str()
+            .ok_or(Error::BadTomlType)?
+            .to_owned();
+
+        if !chip.contains("lpc55") {
+            return Err(Error::WrongChip(chip));
+        }
+
+        self.image.sign(
+            signing_certs,
+            root_certs,
+            private_key,
+            execution_address,
+        )
+    }
+
+    /// Adds `img/CMPA.bin` to the archive, generated based on a DICE
+    /// configuration and set of root certificates.
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
+    pub fn set_cmpa(
+        &mut self,
+        dice: lpc55_sign::signed_image::DiceArgs,
+        enable_secure_boot: bool,
+        debug: lpc55_areas::DebugSettings,
+        default_isp: lpc55_areas::DefaultIsp,
+        speed: lpc55_areas::BootSpeed,
+        boot_error_pin: lpc55_areas::BootErrorPin,
+        root_certs: Vec<Vec<u8>>,
+    ) -> Result<(), Error> {
+        let rkth = lpc55_sign::signed_image::root_key_table_hash(root_certs)?;
+        let cmpa = lpc55_sign::signed_image::generate_cmpa(
+            dice,
+            enable_secure_boot,
+            debug,
+            default_isp,
+            speed,
+            boot_error_pin,
+            rkth,
+        )?;
+        if self.new_files.contains_key(CMPA_FILE)
+            || self.extract_file(CMPA_FILE).is_ok()
+        {
+            return Err(Error::DuplicateFilename(CMPA_FILE.to_owned()));
+        }
+        self.new_files
+            .insert(CMPA_FILE.to_string(), cmpa.pack()?.to_vec());
+        Ok(())
+    }
+
+    /// Adds `img/CFPA.bin` to the archive, based on a set of root certificates.
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
+    pub fn set_cfpa(
+        &mut self,
+        settings: lpc55_areas::DebugSettings,
+        revoke: [lpc55_areas::ROTKeyStatus; 4],
+    ) -> Result<(), Error> {
+        let cfpa = lpc55_sign::signed_image::generate_cfpa(settings, revoke)?;
+        if self.new_files.contains_key(CFPA_FILE)
+            || self.extract_file(CFPA_FILE).is_ok()
+        {
+            return Err(Error::DuplicateFilename(CFPA_FILE.to_owned()));
+        }
+        self.new_files
+            .insert(CFPA_FILE.to_string(), cfpa.pack()?.to_vec());
         Ok(())
     }
 }
