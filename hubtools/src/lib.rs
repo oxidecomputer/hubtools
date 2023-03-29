@@ -466,7 +466,8 @@ impl RawHubrisArchive {
         Ok(out)
     }
 
-    fn extract_file(&self, name: &str) -> Result<Vec<u8>, Error> {
+    /// Extracts a file from the ZIP archive by name
+    pub fn extract_file(&self, name: &str) -> Result<Vec<u8>, Error> {
         let cursor = Cursor::new(self.zip.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
