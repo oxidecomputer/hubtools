@@ -422,7 +422,11 @@ impl RawHubrisArchive {
 
         // The header is located in one of a few locations, depending on MCU
         // and versions of the PAC crates.
-        for header_offset in [0xbc, 0xc0, 0x298] {
+        //
+        // - 0xbc and 0xc0 are possible values for the STM32G0
+        // - 0x298 is for the STM32H7
+        // - 0x130 is for the LPC55
+        for header_offset in [0xbc, 0xc0, 0x130, 0x298] {
             let mut header_magic = 0u32;
             self.read(start_addr + header_offset, &mut header_magic)?;
             if header_magic == HEADER_MAGIC {
