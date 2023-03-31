@@ -274,7 +274,9 @@ pub enum Error {
     #[error("manifest decoding error: {0}")]
     BadManifest(std::str::Utf8Error),
 
-    #[error("could not find magic number {0:#x}")]
+    #[error(
+        "can't find header to locate caboose (missing magic number {0:#x})"
+    )]
     MissingMagic(u32),
 
     #[error("caboose is not present in this image")]
