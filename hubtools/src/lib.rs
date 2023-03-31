@@ -235,8 +235,9 @@ impl RawHubrisImage {
     }
 }
 
-// Defined in the kernel ABI crate
-const HEADER_MAGIC: u32 = 0x15356637;
+// Defined in the kernel ABI crate - we support both the original and new-style
+// magic numbers, which use the same header layout.
+const HEADER_MAGIC: [u32; 2] = [0x15356637, 0x64_CE_D6_CA];
 const CABOOSE_MAGIC: u32 = 0xcab0005e;
 
 #[derive(Error, Debug)]
@@ -274,10 +275,8 @@ pub enum Error {
     #[error("manifest decoding error: {0}")]
     BadManifest(std::str::Utf8Error),
 
-    #[error(
-        "can't find header to locate caboose (missing magic number {0:#x})"
-    )]
-    MissingMagic(u32),
+    #[error("can't find header to locate caboose (sought magic: {0:#x?})")]
+    MissingMagic([u32; 2]),
 
     #[error("caboose is not present in this image")]
     MissingCaboose,
@@ -431,7 +430,7 @@ impl RawHubrisArchive {
         for header_offset in [0xbc, 0xc0, 0x130, 0x298] {
             let mut header_magic = 0u32;
             self.read(start_addr + header_offset, &mut header_magic)?;
-            if header_magic == HEADER_MAGIC {
+            if HEADER_MAGIC.contains(&header_magic) {
                 found_header = Some(header_offset);
                 break;
             }
