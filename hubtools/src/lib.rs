@@ -755,6 +755,7 @@ impl RawHubrisArchive {
             speed,
             boot_error_pin,
             rkth,
+            false,
         )?;
         if self.new_files.contains_key(CMPA_FILE)
             || self.extract_file(CMPA_FILE).is_ok()
