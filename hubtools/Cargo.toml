@@ -16,6 +16,5 @@ zip = { version = "0.6", default-features = false, features = ["bzip2"] }
 
 tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
 tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
-# TODO: remove branch once lpc55_support#58 merges
-lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", branch = "rust-crypto", default-features = false, version = "0.2" }
-lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", branch = "rust-crypto", default-features = false, version = "0.2" }
+lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
+lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
