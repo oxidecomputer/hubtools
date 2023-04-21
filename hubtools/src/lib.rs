@@ -5,6 +5,7 @@ use object::{Object, ObjectSection};
 use packed_struct::PackedStruct;
 use path_slash::PathBufExt;
 use thiserror::Error;
+use x509_cert::Certificate;
 use zerocopy::{AsBytes, FromBytes};
 
 use std::{
@@ -214,8 +215,8 @@ impl RawHubrisImage {
 
     pub fn sign(
         &mut self,
-        signing_certs: Vec<Vec<u8>>,
-        root_certs: Vec<Vec<u8>>,
+        signing_certs: Vec<Certificate>,
+        root_certs: Vec<Certificate>,
         private_key: &str,
         execution_address: u32,
     ) -> Result<(), Error> {
@@ -328,6 +329,9 @@ pub enum Error {
 
     #[error("wrong chip: expected lpc55, got {0}")]
     WrongChip(String),
+
+    #[error("certificates have unsupported {0}-bit public keys")]
+    UnsupportedKeySize(usize),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -701,8 +705,8 @@ impl RawHubrisArchive {
     /// changes back to the archive on disk.
     pub fn sign(
         &mut self,
-        signing_certs: Vec<Vec<u8>>,
-        root_certs: Vec<Vec<u8>>,
+        signing_certs: Vec<Certificate>,
+        root_certs: Vec<Certificate>,
         private_key: &str,
         execution_address: u32,
     ) -> Result<(), Error> {
@@ -745,9 +749,16 @@ impl RawHubrisArchive {
         default_isp: lpc55_areas::DefaultIsp,
         speed: lpc55_areas::BootSpeed,
         boot_error_pin: lpc55_areas::BootErrorPin,
-        root_certs: Vec<Vec<u8>>,
+        root_certs: Vec<Certificate>,
     ) -> Result<(), Error> {
-        let rkth = lpc55_sign::signed_image::root_key_table_hash(root_certs)?;
+        let root_certs = lpc55_sign::signed_image::pad_roots(root_certs)?;
+        let use_rsa_4096 =
+            match lpc55_sign::signed_image::required_key_size(&root_certs)? {
+                Some(2048) | None => false,
+                Some(4096) => true,
+                Some(x) => return Err(Error::UnsupportedKeySize(x)),
+            };
+        let rkth = lpc55_sign::signed_image::root_key_table_hash(&root_certs)?;
         let cmpa = lpc55_sign::signed_image::generate_cmpa(
             dice,
             enable_secure_boot,
@@ -757,6 +768,7 @@ impl RawHubrisArchive {
             boot_error_pin,
             rkth,
             false,
+            use_rsa_4096,
         )?;
         if self.new_files.contains_key(CMPA_FILE)
             || self.extract_file(CMPA_FILE).is_ok()
@@ -776,8 +788,13 @@ impl RawHubrisArchive {
         &mut self,
         settings: lpc55_areas::DebugSettings,
         revoke: [lpc55_areas::ROTKeyStatus; 4],
+        image_key_revoke: u16,
     ) -> Result<(), Error> {
-        let cfpa = lpc55_sign::signed_image::generate_cfpa(settings, revoke)?;
+        let cfpa = lpc55_sign::signed_image::generate_cfpa(
+            settings,
+            revoke,
+            image_key_revoke,
+        )?;
         if self.new_files.contains_key(CFPA_FILE)
             || self.extract_file(CFPA_FILE).is_ok()
         {

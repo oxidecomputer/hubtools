@@ -10,6 +10,7 @@ packed_struct = { version = "0.10", default-features = false, features = ["std"]
 path-slash = { version = "0.1", default-features = false }
 thiserror = { version = "1", default-features = false }
 toml = { version = "0.7", default-features = false, features = ["parse"] }
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 zerocopy = { version = "0.6", default-features = false }
 zip = { version = "0.6", default-features = false, features = ["bzip2"] }
 
