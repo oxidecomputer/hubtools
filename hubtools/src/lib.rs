@@ -217,7 +217,7 @@ impl RawHubrisImage {
         &mut self,
         signing_certs: Vec<Certificate>,
         root_certs: Vec<Certificate>,
-        private_key: &str,
+        private_key: &rsa::RsaPrivateKey,
         execution_address: u32,
     ) -> Result<(), Error> {
         // Overwrite the image with a signed blob
@@ -707,7 +707,7 @@ impl RawHubrisArchive {
         &mut self,
         signing_certs: Vec<Certificate>,
         root_certs: Vec<Certificate>,
-        private_key: &str,
+        private_key: &rsa::RsaPrivateKey,
         execution_address: u32,
     ) -> Result<(), Error> {
         let manifest = self.extract_file("app.toml")?;

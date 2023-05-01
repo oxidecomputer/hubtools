@@ -1,6 +1,6 @@
 [package]
 name = "hubtools"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.66"
 
@@ -16,5 +16,6 @@ zip = { version = "0.6", default-features = false, features = ["bzip2"] }
 
 tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
 tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false }
-lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
+lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.3" }
 lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
+rsa = { version = "0.9.0", default-features = false, features = ["std", "pem", "sha2"] }
