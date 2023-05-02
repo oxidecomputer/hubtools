@@ -489,6 +489,11 @@ impl RawHubrisArchive {
         Ok(out)
     }
 
+    /// Extract the TLVC-encoded auxiliary image file from the ZIP archive
+    pub fn auxiliary_image(&self) -> Result<Vec<u8>, Error> {
+        self.extract_file("img/auxi.tlvc")
+    }
+
     /// Extracts a file from the ZIP archive by name
     pub fn extract_file(&self, name: &str) -> Result<Vec<u8>, Error> {
         let cursor = Cursor::new(self.zip.as_slice());
