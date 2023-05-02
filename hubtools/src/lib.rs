@@ -332,16 +332,25 @@ pub enum Error {
 
     #[error("certificates have unsupported {0}-bit public keys")]
     UnsupportedKeySize(usize),
+
+    #[error("cannot overwrite an in-memory archive")]
+    CannotOverwriteInMemoryArchive,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchiveSource {
+    Memory,
+    Disk(PathBuf),
+}
 
 /// Minimal Hubris archive, useful for some basic manipulation of the binary
 /// image within.
 #[derive(Debug)]
 pub struct RawHubrisArchive {
-    /// Source path of the Hubris archive on disk
-    pub path: PathBuf,
+    /// Source of the Hubris archive
+    pub source: ArchiveSource,
 
     /// New files to be inserted into the zip archive when `overwrite` is called
     new_files: BTreeMap<String, Vec<u8>>,
@@ -360,12 +369,21 @@ const CMPA_FILE: &str = "img/CMPA.bin";
 const CFPA_FILE: &str = "img/CFPA.bin";
 
 impl RawHubrisArchive {
+    pub fn from_vec(contents: Vec<u8>) -> Result<Self, Error> {
+        Self::new(contents, ArchiveSource::Memory)
+    }
+
     pub fn load<P: AsRef<Path> + std::fmt::Debug + Copy>(
         filename: P,
     ) -> Result<Self, Error> {
         let contents = std::fs::read(filename).map_err(|e| {
             Error::FileReadFailed(filename.as_ref().to_owned(), e)
         })?;
+        let source = ArchiveSource::Disk(filename.as_ref().to_owned());
+        Self::new(contents, source)
+    }
+
+    fn new(contents: Vec<u8>, source: ArchiveSource) -> Result<Self, Error> {
         let cursor = Cursor::new(contents.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
@@ -394,7 +412,7 @@ impl RawHubrisArchive {
         };
 
         Ok(Self {
-            path: filename.as_ref().to_owned(),
+            source,
             zip: contents,
             new_files: BTreeMap::new(),
             image,
@@ -602,8 +620,17 @@ impl RawHubrisArchive {
     /// Overwrites the existing archive with our modifications
     ///
     /// Changes are only made to the `img/final.*` files, as well as anything
-    /// listed in `self.new_files`
+    /// listed in `self.new_files`. Only supported if this archive was opened
+    /// from an on-disk file via `RawHubrisArchive::load()`; not supported for
+    /// in-memory archives.
     pub fn overwrite(mut self) -> Result<(), Error> {
+        // Ensure our archive came from an on-disk source. We can't actually
+        // extract the path here due to our mutation of `self` below, so we
+        // check here and then extract it below when it's time to write.
+        if !matches!(self.source, ArchiveSource::Disk(_)) {
+            return Err(Error::CannotOverwriteInMemoryArchive);
+        }
+
         // Convert the SREC into all of our canonical file formats
         let elf = self.image.to_elf()?;
         self.add_file("img/final.elf", &elf)?;
@@ -646,8 +673,14 @@ impl RawHubrisArchive {
         out.finish()?;
         drop(out);
 
-        std::fs::write(&self.path, out_buf)
-            .map_err(|e| Error::FileWriteFailed(self.path.clone(), e))?;
+        let path = match self.source {
+            ArchiveSource::Disk(path) => path,
+            // We checked above that our source was `::Disk(_)`.
+            ArchiveSource::Memory => unreachable!(),
+        };
+
+        std::fs::write(&path, out_buf)
+            .map_err(|e| Error::FileWriteFailed(path, e))?;
         Ok(())
     }
 
