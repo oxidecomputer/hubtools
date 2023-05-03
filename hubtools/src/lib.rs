@@ -14,6 +14,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod caboose;
+
+pub use caboose::{Caboose, CabooseError};
+
 #[derive(Debug)]
 pub struct RawHubrisImage {
     pub start_addr: u32,
@@ -332,16 +336,25 @@ pub enum Error {
 
     #[error("certificates have unsupported {0}-bit public keys")]
     UnsupportedKeySize(usize),
+
+    #[error("cannot overwrite an in-memory archive")]
+    CannotOverwriteInMemoryArchive,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArchiveSource {
+    Memory,
+    Disk(PathBuf),
+}
 
 /// Minimal Hubris archive, useful for some basic manipulation of the binary
 /// image within.
 #[derive(Debug)]
 pub struct RawHubrisArchive {
-    /// Source path of the Hubris archive on disk
-    pub path: PathBuf,
+    /// Source of the Hubris archive
+    pub source: ArchiveSource,
 
     /// New files to be inserted into the zip archive when `overwrite` is called
     new_files: BTreeMap<String, Vec<u8>>,
@@ -360,12 +373,21 @@ const CMPA_FILE: &str = "img/CMPA.bin";
 const CFPA_FILE: &str = "img/CFPA.bin";
 
 impl RawHubrisArchive {
+    pub fn from_vec(contents: Vec<u8>) -> Result<Self, Error> {
+        Self::new(contents, ArchiveSource::Memory)
+    }
+
     pub fn load<P: AsRef<Path> + std::fmt::Debug + Copy>(
         filename: P,
     ) -> Result<Self, Error> {
         let contents = std::fs::read(filename).map_err(|e| {
             Error::FileReadFailed(filename.as_ref().to_owned(), e)
         })?;
+        let source = ArchiveSource::Disk(filename.as_ref().to_owned());
+        Self::new(contents, source)
+    }
+
+    fn new(contents: Vec<u8>, source: ArchiveSource) -> Result<Self, Error> {
         let cursor = Cursor::new(contents.as_slice());
         let mut archive =
             zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
@@ -394,7 +416,7 @@ impl RawHubrisArchive {
         };
 
         Ok(Self {
-            path: filename.as_ref().to_owned(),
+            source,
             zip: contents,
             new_files: BTreeMap::new(),
             image,
@@ -463,12 +485,17 @@ impl RawHubrisArchive {
     }
 
     /// Reads the caboose from local memory
-    pub fn read_caboose(&self) -> Result<Vec<u8>, Error> {
+    pub fn read_caboose(&self) -> Result<Caboose, Error> {
         // Skip the start and end word, which are markers
-        let caboose_range = self.caboose_range()?;
+        let caboose_range = dbg!(self.caboose_range()?);
         let mut out = vec![0u8; caboose_range.len()];
         self.read(caboose_range.start, out.as_mut_slice())?;
-        Ok(out)
+        Ok(Caboose::new(out))
+    }
+
+    /// Extract the TLVC-encoded auxiliary image file from the ZIP archive
+    pub fn auxiliary_image(&self) -> Result<Vec<u8>, Error> {
+        self.extract_file("img/auxi.tlvc")
     }
 
     /// Extracts a file from the ZIP archive by name
@@ -557,21 +584,21 @@ impl RawHubrisArchive {
 
         let mut chunks = vec![
             tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(*b"GITC"),
+                tlvc_text::Tag::new(caboose::tags::GITC),
                 vec![tlvc_text::Piece::Bytes(git)],
             ),
             tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(*b"BORD"),
+                tlvc_text::Tag::new(caboose::tags::BORD),
                 vec![tlvc_text::Piece::String(board)],
             ),
             tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(*b"NAME"),
+                tlvc_text::Tag::new(caboose::tags::NAME),
                 vec![tlvc_text::Piece::String(name)],
             ),
         ];
         if let Some(v) = version {
             let data = tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(*b"VERS"),
+                tlvc_text::Tag::new(caboose::tags::VERS),
                 vec![tlvc_text::Piece::String(v.to_owned())],
             );
             chunks.push(data)
@@ -596,14 +623,23 @@ impl RawHubrisArchive {
     /// Checks whether the caboose is empty in local memory
     pub fn is_caboose_empty(&self) -> Result<bool, Error> {
         let caboose = self.read_caboose()?;
-        Ok(caboose.into_iter().all(|c| c == 0xFF))
+        Ok(caboose.as_slice().iter().all(|&c| c == 0xFF))
     }
 
     /// Overwrites the existing archive with our modifications
     ///
     /// Changes are only made to the `img/final.*` files, as well as anything
-    /// listed in `self.new_files`
+    /// listed in `self.new_files`. Only supported if this archive was opened
+    /// from an on-disk file via `RawHubrisArchive::load()`; not supported for
+    /// in-memory archives.
     pub fn overwrite(mut self) -> Result<(), Error> {
+        // Ensure our archive came from an on-disk source. We can't actually
+        // extract the path here due to our mutation of `self` below, so we
+        // check here and then extract it below when it's time to write.
+        if !matches!(self.source, ArchiveSource::Disk(_)) {
+            return Err(Error::CannotOverwriteInMemoryArchive);
+        }
+
         // Convert the SREC into all of our canonical file formats
         let elf = self.image.to_elf()?;
         self.add_file("img/final.elf", &elf)?;
@@ -646,8 +682,14 @@ impl RawHubrisArchive {
         out.finish()?;
         drop(out);
 
-        std::fs::write(&self.path, out_buf)
-            .map_err(|e| Error::FileWriteFailed(self.path.clone(), e))?;
+        let path = match self.source {
+            ArchiveSource::Disk(path) => path,
+            // We checked above that our source was `::Disk(_)`.
+            ArchiveSource::Memory => unreachable!(),
+        };
+
+        std::fs::write(&path, out_buf)
+            .map_err(|e| Error::FileWriteFailed(path, e))?;
         Ok(())
     }
 
