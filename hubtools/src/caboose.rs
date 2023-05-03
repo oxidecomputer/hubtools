@@ -28,13 +28,29 @@ impl Caboose {
         &self.raw
     }
 
+    pub fn git_commit(&self) -> Result<&[u8], CabooseError> {
+        self.get_tag(tags::GITC)
+    }
+
     pub fn board(&self) -> Result<&[u8], CabooseError> {
+        self.get_tag(tags::BORD)
+    }
+
+    pub fn name(&self) -> Result<&[u8], CabooseError> {
+        self.get_tag(tags::NAME)
+    }
+
+    pub fn version(&self) -> Result<&[u8], CabooseError> {
+        self.get_tag(tags::VERS)
+    }
+
+    fn get_tag(&self, tag: [u8; 4]) -> Result<&[u8], CabooseError> {
         use tlvc::TlvcReader;
         let mut reader = TlvcReader::begin(self.as_slice())
             .map_err(CabooseError::TlvcReadError)?;
 
         while let Ok(Some(chunk)) = reader.next() {
-            if chunk.header().tag != tags::BORD {
+            if chunk.header().tag != tag {
                 continue;
             }
 
@@ -55,7 +71,7 @@ impl Caboose {
             return Ok(&data[data_start..][..data_len]);
         }
 
-        Err(CabooseError::MissingTag { tag: tags::BORD })
+        Err(CabooseError::MissingTag { tag })
     }
 }
 
