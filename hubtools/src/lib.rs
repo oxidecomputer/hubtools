@@ -265,6 +265,9 @@ pub enum Error {
     #[error("bad comment encoding")]
     BadCommentEncoding(std::str::Utf8Error),
 
+    #[error("bad image name encoding")]
+    BadImageNameEncoding(std::string::FromUtf8Error),
+
     #[error("could not parse version string `{0}`")]
     BadVersionString(std::num::ParseIntError, String),
 
@@ -491,6 +494,12 @@ impl RawHubrisArchive {
         let mut out = vec![0u8; caboose_range.len()];
         self.read(caboose_range.start, out.as_mut_slice())?;
         Ok(Caboose::new(out))
+    }
+
+    /// Extract the name of the image from the ZIP archive
+    pub fn image_name(&self) -> Result<String, Error> {
+        let raw = self.extract_file("image-name")?;
+        String::from_utf8(raw).map_err(Error::BadImageNameEncoding)
     }
 
     /// Extract the TLVC-encoded auxiliary image file from the ZIP archive
