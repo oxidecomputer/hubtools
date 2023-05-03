@@ -487,7 +487,7 @@ impl RawHubrisArchive {
     /// Reads the caboose from local memory
     pub fn read_caboose(&self) -> Result<Caboose, Error> {
         // Skip the start and end word, which are markers
-        let caboose_range = dbg!(self.caboose_range()?);
+        let caboose_range = self.caboose_range()?;
         let mut out = vec![0u8; caboose_range.len()];
         self.read(caboose_range.start, out.as_mut_slice())?;
         Ok(Caboose::new(out))
