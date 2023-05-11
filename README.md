@@ -15,5 +15,4 @@ Right now, this repository contains two things:
 
 - `hubtools` is a crate for miscellaneous Hubris archive manipulation
 - `hubedit` is a command-line executable for making post-build modifications to
-  a Hubris archive, e.g. as part of a release engineering pipeline.  Right now,
-  it only supports modifying the caboose of the image.
+  a Hubris archive, e.g. as part of a release engineering pipeline.
