@@ -8,7 +8,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum CabooseError {
     #[error("error reading caboose: {0:?}")]
-    TlvcReadError(tlvc::TlvcReadError),
+    TlvcReadError(tlvc::TlvcReadError<std::convert::Infallible>),
 
     #[error("caboose missing expected tag {tag:?}")]
     MissingTag { tag: [u8; 4] },
