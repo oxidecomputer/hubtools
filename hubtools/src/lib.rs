@@ -238,6 +238,10 @@ impl RawHubrisImage {
 
         Ok(())
     }
+
+    pub fn replace(&mut self, data: Vec<u8>) {
+        self.data = data;
+    }
 }
 
 // Defined in the kernel ABI crate - we support both the original and new-style
@@ -785,6 +789,17 @@ impl RawHubrisArchive {
             private_key,
             execution_address,
         )
+    }
+
+    /// Replaces the image with a binary equivalent from somewhere else.
+    ///
+    /// This is intended for use when inserting an image that has been
+    /// externally signed.
+    ///
+    /// This modifies local data in memory; call `self.overwrite` to persist
+    /// changes back to the archive on disk.
+    pub fn replace(&mut self, data: Vec<u8>) {
+        self.image.replace(data);
     }
 
     /// Adds `img/CMPA.bin` to the archive, generated based on a DICE
