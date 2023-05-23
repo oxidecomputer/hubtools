@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use anyhow::{anyhow, bail, Result};
+use std::path::PathBuf;
+
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use hubtools::RawHubrisArchive;
 
@@ -38,6 +40,18 @@ pub enum Command {
     VerifyImage {
         #[clap(short, long)]
         verbose: bool,
+    },
+    /// Replaces the binary image within an archive with a different binary
+    /// image, supplied on the command line as a raw (BIN) file.
+    ///
+    /// This is intended to be used to replace a default-signed image from the
+    /// build system with an actually-signed image from permission-slip.
+    ///
+    /// If misused, this can produce an archive that can't be debugged, so don't
+    /// do that.
+    ReplaceImage {
+        /// Path to BIN file to insert.
+        image: PathBuf,
     },
 }
 
@@ -91,6 +105,13 @@ fn main() -> Result<()> {
         }
         Command::VerifyImage { verbose } => {
             archive.verify(verbose)?;
+        }
+        Command::ReplaceImage { image } => {
+            let contents = std::fs::read(&image).with_context(|| {
+                format!("reading image file {}", image.display())
+            })?;
+            archive.replace(contents);
+            archive.overwrite()?;
         }
     }
 

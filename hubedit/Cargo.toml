@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow.version = "1"
 hubtools.workspace = true
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 
 tlvc.git = "https://github.com/oxidecomputer/tlvc"
 tlvc-text.git = "https://github.com/oxidecomputer/tlvc"
