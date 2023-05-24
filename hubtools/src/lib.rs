@@ -239,6 +239,15 @@ impl RawHubrisImage {
         Ok(())
     }
 
+    pub fn unsign(&mut self) -> Result<(), Error> {
+        let stamped = lpc55_sign::signed_image::remove_image_signature(
+            self.data.clone(),
+        )?;
+        self.data = stamped;
+
+        Ok(())
+    }
+
     pub fn replace(&mut self, data: Vec<u8>) {
         self.data = data;
     }
@@ -789,6 +798,11 @@ impl RawHubrisArchive {
             private_key,
             execution_address,
         )
+    }
+
+    /// Strips any existing signature from the image.
+    pub fn unsign(&mut self) -> Result<(), Error> {
+        self.image.unsign()
     }
 
     /// Replaces the image with a binary equivalent from somewhere else.
