@@ -53,6 +53,22 @@ pub enum Command {
         /// Path to BIN file to insert.
         image: PathBuf,
     },
+    /// Extracts the binary image within an archive as a raw (BIN) file.
+    ///
+    /// This is primarily intended for producing the raw file permission-slip
+    /// wants to see, but can also be used to e.g. feed programs to bootloaders
+    /// that won't accept ELF or SREC or whatever.
+    ///
+    /// Because of its intended use with permission-slip, this can also strip
+    /// signatures from images.
+    ExtractImage {
+        /// Strip existing signature from image before generating.
+        #[clap(long, short)]
+        unsign: bool,
+
+        /// Path where output should be deposited.
+        output: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -112,6 +128,12 @@ fn main() -> Result<()> {
             })?;
             archive.replace(contents);
             archive.overwrite()?;
+        }
+        Command::ExtractImage { unsign, output } => {
+            if unsign {
+                archive.unsign()?;
+            }
+            std::fs::write(output, archive.image.to_binary()?)?;
         }
     }
 
