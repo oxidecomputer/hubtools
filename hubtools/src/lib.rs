@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 use object::{Object, ObjectSection};
-use packed_struct::PackedStruct;
 use path_slash::PathBufExt;
 use thiserror::Error;
 use x509_cert::Certificate;
@@ -335,23 +334,11 @@ pub enum Error {
     #[error("caboose is not located at the end of the image; is it signed?")]
     BadCabooseLocation,
 
-    #[error("Bad CMPA size: expected 512 bytes, got {0}")]
-    BadCMPASize(usize),
-
-    #[error("Bad CFPA size: expected 512 bytes, got {0}")]
-    BadCFPASize(usize),
-
-    #[error("packed struct error: {0}")]
-    PackedStruct(#[from] packed_struct::PackingError),
-
     #[error("LPC55 support error: {0}")]
     Lpc55(#[from] lpc55_sign::Error),
 
     #[error("wrong chip: expected lpc55, got {0}")]
     WrongChip(String),
-
-    #[error("certificates have unsupported {0}-bit public keys")]
-    UnsupportedKeySize(usize),
 
     #[error("cannot overwrite an in-memory archive")]
     CannotOverwriteInMemoryArchive,
@@ -384,9 +371,6 @@ pub struct RawHubrisArchive {
     /// Raw data from the image
     pub image: RawHubrisImage,
 }
-
-const CMPA_FILE: &str = "img/CMPA.bin";
-const CFPA_FILE: &str = "img/CFPA.bin";
 
 impl RawHubrisArchive {
     pub fn from_vec(contents: Vec<u8>) -> Result<Self, Error> {
@@ -791,74 +775,5 @@ impl RawHubrisArchive {
     /// changes back to the archive on disk.
     pub fn replace(&mut self, data: Vec<u8>) {
         self.image.replace(data);
-    }
-
-    /// Adds `img/CMPA.bin` to the archive, generated based on a DICE
-    /// configuration and set of root certificates.
-    ///
-    /// This modifies local data in memory; call `self.overwrite` to persist
-    /// changes back to the archive on disk.
-    pub fn set_cmpa(
-        &mut self,
-        dice: lpc55_sign::signed_image::DiceArgs,
-        enable_secure_boot: bool,
-        debug: lpc55_areas::DebugSettings,
-        default_isp: lpc55_areas::DefaultIsp,
-        speed: lpc55_areas::BootSpeed,
-        boot_error_pin: lpc55_areas::BootErrorPin,
-        root_certs: Vec<Certificate>,
-    ) -> Result<(), Error> {
-        let root_certs = lpc55_sign::signed_image::pad_roots(root_certs)?;
-        let use_rsa_4096 =
-            match lpc55_sign::signed_image::required_key_size(&root_certs)? {
-                Some(2048) | None => false,
-                Some(4096) => true,
-                Some(x) => return Err(Error::UnsupportedKeySize(x)),
-            };
-        let rkth = lpc55_sign::signed_image::root_key_table_hash(&root_certs)?;
-        let cmpa = lpc55_sign::signed_image::generate_cmpa(
-            dice,
-            enable_secure_boot,
-            debug,
-            default_isp,
-            speed,
-            boot_error_pin,
-            rkth,
-            false,
-            use_rsa_4096,
-        )?;
-        if self.new_files.contains_key(CMPA_FILE)
-            || self.extract_file(CMPA_FILE).is_ok()
-        {
-            return Err(Error::DuplicateFilename(CMPA_FILE.to_owned()));
-        }
-        self.new_files
-            .insert(CMPA_FILE.to_string(), cmpa.pack()?.to_vec());
-        Ok(())
-    }
-
-    /// Adds `img/CFPA.bin` to the archive, based on a set of root certificates.
-    ///
-    /// This modifies local data in memory; call `self.overwrite` to persist
-    /// changes back to the archive on disk.
-    pub fn set_cfpa(
-        &mut self,
-        settings: lpc55_areas::DebugSettings,
-        revoke: [lpc55_areas::ROTKeyStatus; 4],
-        image_key_revoke: u16,
-    ) -> Result<(), Error> {
-        let cfpa = lpc55_sign::signed_image::generate_cfpa(
-            settings,
-            revoke,
-            image_key_revoke,
-        )?;
-        if self.new_files.contains_key(CFPA_FILE)
-            || self.extract_file(CFPA_FILE).is_ok()
-        {
-            return Err(Error::DuplicateFilename(CFPA_FILE.to_owned()));
-        }
-        self.new_files
-            .insert(CFPA_FILE.to_string(), cfpa.pack()?.to_vec());
-        Ok(())
     }
 }
