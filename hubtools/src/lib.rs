@@ -740,29 +740,6 @@ impl RawHubrisArchive {
         Ok(())
     }
 
-    /// Verifies the signature of an LPC55 image
-    ///
-    /// Results are printed to `stderr` using `log`
-    pub fn verify(&self, verbose: bool) -> Result<(), Error> {
-        // CMPA and CFPA are included in the archive (for now)
-        let cmpa_bytes = self.extract_file("img/CMPA.bin")?;
-        let cmpa_array: Box<[u8; 512]> = cmpa_bytes
-            .try_into()
-            .map_err(|v: Vec<u8>| Error::BadCMPASize(v.len()))?;
-        let cmpa = lpc55_areas::CMPAPage::from_bytes(&cmpa_array)?;
-
-        let cfpa_bytes = self.extract_file("img/CFPA.bin")?;
-        let cfpa_array: Box<[u8; 512]> = cfpa_bytes
-            .try_into()
-            .map_err(|v: Vec<u8>| Error::BadCFPASize(v.len()))?;
-        let cfpa = lpc55_areas::CFPAPage::from_bytes(&cfpa_array)?;
-
-        lpc55_sign::verify::init_verify_logger(verbose);
-        lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)?;
-
-        Ok(())
-    }
-
     /// Signs the given image with a chain of one-or-more certificates
     ///
     /// This modifies local data in memory; call `self.overwrite` to persist
