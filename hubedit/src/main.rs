@@ -37,10 +37,6 @@ pub enum Command {
         #[clap(short, long)]
         force: bool,
     },
-    VerifyImage {
-        #[clap(short, long)]
-        verbose: bool,
-    },
     /// Replaces the binary image within an archive with a different binary
     /// image, supplied on the command line as a raw (BIN) file.
     ///
@@ -118,9 +114,6 @@ fn main() -> Result<()> {
             }
             archive.erase_caboose()?;
             archive.overwrite()?;
-        }
-        Command::VerifyImage { verbose } => {
-            archive.verify(verbose)?;
         }
         Command::ReplaceImage { image } => {
             let contents = std::fs::read(&image).with_context(|| {

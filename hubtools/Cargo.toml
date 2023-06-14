@@ -1,12 +1,11 @@
 [package]
 name = "hubtools"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.66"
 
 [dependencies]
 object = { version = "0.30", default-features = false, features = ["write", "read"] }
-packed_struct = { version = "0.10", default-features = false, features = ["std"] }
 path-slash = { version = "0.1", default-features = false }
 thiserror = { version = "1", default-features = false }
 toml = { version = "0.7", default-features = false, features = ["parse"] }
