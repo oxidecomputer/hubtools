@@ -579,7 +579,7 @@ impl RawHubrisArchive {
             .as_str()
             .ok_or(Error::BadTomlType)?
             .to_owned();
-        let name = manifest
+        let mut name = manifest
             .as_table()
             .ok_or(Error::BadTomlType)?
             .get("name")
@@ -587,6 +587,25 @@ impl RawHubrisArchive {
             .as_str()
             .ok_or(Error::BadTomlType)?
             .to_owned();
+
+        // If this Hubris archive used our TOML inheritance system, then the
+        // name could be overridded in the `patches.toml` file.
+        if let Ok(patches) = self.extract_file("patches.toml") {
+            let patches: toml::Value = toml::from_str(
+                std::str::from_utf8(&patches).map_err(Error::BadManifest)?,
+            )
+            .map_err(Error::BadToml)?;
+
+            if let Some(n) = patches
+                .as_table()
+                .and_then(|p| p.get("patches"))
+                .and_then(|p| p.as_table())
+                .and_then(|p| p.get("name"))
+                .and_then(|p| p.as_str())
+            {
+                name = n.to_string();
+            }
+        }
 
         let mut chunks = vec![
             tlvc_text::Piece::Chunk(
