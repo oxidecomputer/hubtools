@@ -598,8 +598,6 @@ impl RawHubrisArchive {
 
             if let Some(n) = patches
                 .as_table()
-                .and_then(|p| p.get("patches"))
-                .and_then(|p| p.as_table())
                 .and_then(|p| p.get("name"))
                 .and_then(|p| p.as_str())
             {
