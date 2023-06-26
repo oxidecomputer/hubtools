@@ -66,7 +66,7 @@ pub enum Command {
         output: PathBuf,
     },
     /// Remove the signature from the archive (in-place)
-    Unsign,
+    UnsignImage,
 }
 
 fn main() -> Result<()> {
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
             }
             std::fs::write(output, archive.image.to_binary()?)?;
         }
-        Command::Unsign => {
+        Command::UnsignImage => {
             archive.unsign()?;
             archive.overwrite()?;
         }
