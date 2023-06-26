@@ -65,6 +65,8 @@ pub enum Command {
         /// Path where output should be deposited.
         output: PathBuf,
     },
+    /// Remove the signature from the archive (in-place)
+    Unsign,
 }
 
 fn main() -> Result<()> {
@@ -127,6 +129,10 @@ fn main() -> Result<()> {
                 archive.unsign()?;
             }
             std::fs::write(output, archive.image.to_binary()?)?;
+        }
+        Command::Unsign => {
+            archive.unsign()?;
+            archive.overwrite()?;
         }
     }
 
