@@ -331,7 +331,10 @@ pub enum Error {
     #[error("memory segments are overlapping")]
     MemorySegmentOverlap,
 
-    #[error("caboose is not located at the end of the image; is it signed?")]
+    #[error(
+        "caboose is not located at the end of the image; \
+         you may need to unsign the image first"
+    )]
     BadCabooseLocation,
 
     #[error("LPC55 support error: {0}")]

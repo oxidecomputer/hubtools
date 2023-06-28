@@ -104,7 +104,10 @@ fn main() -> Result<()> {
                 if force {
                     archive.erase_caboose()?;
                 } else {
-                    bail!("archive already has a caboose");
+                    bail!(
+                        "archive already has a caboose; \
+                         use --force to overwrite"
+                    );
                 }
             }
             if no_defaults {
@@ -116,7 +119,10 @@ fn main() -> Result<()> {
         }
         Command::EraseCaboose { force } => {
             if archive.is_caboose_empty()? && !force {
-                bail!("archive does not have a caboose");
+                bail!(
+                    "archive does not have a caboose; \
+                     use --force to skip this check"
+                );
             }
             archive.erase_caboose()?;
             archive.overwrite()?;
