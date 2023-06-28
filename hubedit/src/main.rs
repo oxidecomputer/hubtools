@@ -100,8 +100,12 @@ fn main() -> Result<()> {
             force,
             no_defaults,
         } => {
-            if !archive.is_caboose_empty()? && !force {
-                bail!("archive already has a caboose");
+            if !archive.is_caboose_empty()? {
+                if force {
+                    archive.erase_caboose()?;
+                } else {
+                    bail!("archive already has a caboose");
+                }
             }
             if no_defaults {
                 archive.write_version_to_caboose(&version)?;
