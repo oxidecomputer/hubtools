@@ -15,7 +15,7 @@ use std::{
 
 mod caboose;
 
-pub use caboose::{Caboose, CabooseError};
+pub use caboose::{Caboose, CabooseBuilder, CabooseError};
 
 #[derive(Debug)]
 pub struct RawHubrisImage {
