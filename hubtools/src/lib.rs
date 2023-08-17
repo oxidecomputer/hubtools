@@ -13,9 +13,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod archive_builder;
 mod caboose;
 
-pub use caboose::{Caboose, CabooseError};
+pub use archive_builder::HubrisArchiveBuilder;
+pub use caboose::{Caboose, CabooseBuilder, CabooseError};
 
 #[derive(Debug)]
 pub struct RawHubrisImage {
@@ -250,11 +252,82 @@ impl RawHubrisImage {
     pub fn replace(&mut self, data: Vec<u8>) {
         self.data = data;
     }
+
+    fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
+        let mut found_header = None;
+        let start_addr = self.start_addr;
+
+        for header_offset in header::POSSIBLE_OFFSETS {
+            let mut header_magic = 0u32;
+            self.read(start_addr + header_offset, &mut header_magic)?;
+            if header::MAGIC.contains(&header_magic) {
+                found_header = Some(header_offset);
+                break;
+            }
+        }
+
+        let Some(header_offset) = found_header else {
+            return Err(Error::MissingMagic(header::MAGIC));
+        };
+
+        let mut image_size = 0u32;
+        self.read(start_addr + header_offset + 4, &mut image_size)?;
+
+        let mut caboose_size = 0u32;
+        self.read(start_addr + image_size - 4, &mut caboose_size)?;
+
+        let mut caboose_magic = 0u32;
+        let caboose_magic_addr = (start_addr + image_size)
+            .checked_sub(caboose_size)
+            .ok_or(Error::MissingCaboose)?;
+        self.read(caboose_magic_addr, &mut caboose_magic)?;
+        if caboose_magic != CABOOSE_MAGIC {
+            return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
+        }
+        Ok(start_addr + image_size - caboose_size + 4
+            ..start_addr + image_size - 4)
+    }
+
+    /// Writes to the caboose in local memory
+    fn write_caboose(&mut self, data: &[u8]) -> Result<(), Error> {
+        // Skip the start and end word, which are markers
+        let caboose_range = self.caboose_range()?;
+
+        let end = caboose_range.end - self.start_addr;
+        if end as usize != self.data.len() - 4 {
+            Err(Error::BadCabooseLocation)
+        } else if data.len() > caboose_range.len() {
+            Err(Error::OversizedData(data.len(), caboose_range.len()))
+        } else {
+            self.write(caboose_range.start, data)
+        }
+    }
+
+    /// Attempts to read `out.len()` bytes, starting at `start`
+    fn read<T: AsBytes + FromBytes + ?Sized>(
+        &self,
+        start: u32,
+        out: &mut T,
+    ) -> Result<(), Error> {
+        let size = out.as_bytes().len() as u32;
+        out.as_bytes_mut()
+            .copy_from_slice(self.get(start..start + size)?);
+        Ok(())
+    }
+
+    /// Attempts to read `out.len()` bytes, starting at `start`
+    fn write<T: AsBytes + FromBytes + ?Sized>(
+        &mut self,
+        start: u32,
+        input: &T,
+    ) -> Result<(), Error> {
+        let size = input.as_bytes().len() as u32;
+        self.get_mut(start..start + size)?
+            .copy_from_slice(input.as_bytes());
+        Ok(())
+    }
 }
 
-// Defined in the kernel ABI crate - we support both the original and new-style
-// magic numbers, which use the same header layout.
-const HEADER_MAGIC: [u32; 2] = [0x15356637, 0x64_CE_D6_CA];
 const CABOOSE_MAGIC: u32 = 0xcab0005e;
 
 #[derive(Error, Debug)]
@@ -442,57 +515,12 @@ impl RawHubrisArchive {
         }
     }
 
-    fn start_addr(&self) -> u32 {
-        self.image.start_addr
-    }
-
-    fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
-        let mut found_header = None;
-        let start_addr = self.start_addr();
-
-        // The header is located in one of a few locations, depending on MCU
-        // and versions of the PAC crates.
-        //
-        // - 0xbc and 0xc0 are possible values for the STM32G0
-        // - 0x298 is for the STM32H7
-        // - 0x130 is for the LPC55
-        for header_offset in [0xbc, 0xc0, 0x130, 0x298] {
-            let mut header_magic = 0u32;
-            self.read(start_addr + header_offset, &mut header_magic)?;
-            if HEADER_MAGIC.contains(&header_magic) {
-                found_header = Some(header_offset);
-                break;
-            }
-        }
-
-        let Some(header_offset) = found_header else {
-            return Err(Error::MissingMagic(HEADER_MAGIC));
-        };
-
-        let mut image_size = 0u32;
-        self.read(start_addr + header_offset + 4, &mut image_size)?;
-
-        let mut caboose_size = 0u32;
-        self.read(start_addr + image_size - 4, &mut caboose_size)?;
-
-        let mut caboose_magic = 0u32;
-        let caboose_magic_addr = (start_addr + image_size)
-            .checked_sub(caboose_size)
-            .ok_or(Error::MissingCaboose)?;
-        self.read(caboose_magic_addr, &mut caboose_magic)?;
-        if caboose_magic != CABOOSE_MAGIC {
-            return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
-        }
-        Ok(start_addr + image_size - caboose_size + 4
-            ..start_addr + image_size - 4)
-    }
-
     /// Reads the caboose from local memory
     pub fn read_caboose(&self) -> Result<Caboose, Error> {
         // Skip the start and end word, which are markers
-        let caboose_range = self.caboose_range()?;
+        let caboose_range = self.image.caboose_range()?;
         let mut out = vec![0u8; caboose_range.len()];
-        self.read(caboose_range.start, out.as_mut_slice())?;
+        self.image.read(caboose_range.start, out.as_mut_slice())?;
         Ok(Caboose::new(out))
     }
 
@@ -525,17 +553,7 @@ impl RawHubrisArchive {
     ///
     /// [`overwrite`] must be called to write these changes back to disk.
     pub fn write_caboose(&mut self, data: &[u8]) -> Result<(), Error> {
-        // Skip the start and end word, which are markers
-        let caboose_range = self.caboose_range()?;
-
-        let end = caboose_range.end - self.image.start_addr;
-        if end as usize != self.image.data.len() - 4 {
-            Err(Error::BadCabooseLocation)
-        } else if data.len() > caboose_range.len() {
-            Err(Error::OversizedData(data.len(), caboose_range.len()))
-        } else {
-            self.write(caboose_range.start, data)
-        }
+        self.image.write_caboose(data)
     }
 
     /// Writes the given version (and nothing else) to the caboose
@@ -545,7 +563,7 @@ impl RawHubrisArchive {
     ) -> Result<(), Error> {
         // Manually build the TLV-C data for the caboose
         let data = tlvc_text::Piece::Chunk(
-            tlvc_text::Tag::new(*b"VERS"),
+            tlvc_text::Tag::new(caboose::tags::VERS),
             vec![tlvc_text::Piece::String(version.to_owned())],
         );
         let out = tlvc_text::pack(&[data]);
@@ -637,13 +655,13 @@ impl RawHubrisArchive {
     ///
     /// [`overwrite`] must be called to write these changes back to disk.
     pub fn erase_caboose(&mut self) -> Result<(), Error> {
-        let caboose_range = self.caboose_range()?;
+        let caboose_range = self.image.caboose_range()?;
         let end = caboose_range.end - self.image.start_addr;
         if end as usize != self.image.data.len() - 4 {
             return Err(Error::BadCabooseLocation);
         }
         let data = vec![0xFFu8; caboose_range.len()];
-        self.write(caboose_range.start, data.as_slice())
+        self.image.write(caboose_range.start, data.as_slice())
     }
 
     /// Checks whether the caboose is empty in local memory
@@ -719,31 +737,6 @@ impl RawHubrisArchive {
         Ok(())
     }
 
-    /// Attempts to read `out.len()` bytes, starting at `start`
-    fn read<T: AsBytes + FromBytes + ?Sized>(
-        &self,
-        start: u32,
-        out: &mut T,
-    ) -> Result<(), Error> {
-        let size = out.as_bytes().len() as u32;
-        out.as_bytes_mut()
-            .copy_from_slice(self.image.get(start..start + size)?);
-        Ok(())
-    }
-
-    /// Attempts to read `out.len()` bytes, starting at `start`
-    fn write<T: AsBytes + FromBytes + ?Sized>(
-        &mut self,
-        start: u32,
-        input: &T,
-    ) -> Result<(), Error> {
-        let size = input.as_bytes().len() as u32;
-        self.image
-            .get_mut(start..start + size)?
-            .copy_from_slice(input.as_bytes());
-        Ok(())
-    }
-
     /// Signs the given image with a chain of one-or-more certificates
     ///
     /// This modifies local data in memory; call `self.overwrite` to persist
@@ -796,4 +789,18 @@ impl RawHubrisArchive {
     pub fn replace(&mut self, data: Vec<u8>) {
         self.image.replace(data);
     }
+}
+
+mod header {
+    // Defined in the kernel ABI crate - we support both the original and
+    // new-style magic numbers, which use the same header layout.
+    pub(crate) const MAGIC: [u32; 2] = [0x15356637, 0x64_CE_D6_CA];
+
+    // The header is located in one of a few locations, depending on MCU
+    // and versions of the PAC crates.
+    //
+    // - 0xbc and 0xc0 are possible values for the STM32G0
+    // - 0x298 is for the STM32H7
+    // - 0x130 is for the LPC55
+    pub(crate) const POSSIBLE_OFFSETS: [u32; 4] = [0xbc, 0xc0, 0x130, 0x298];
 }
