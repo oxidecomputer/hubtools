@@ -14,7 +14,7 @@ use zip::ZipWriter;
 ///
 /// Currently the archives produced by `HubrisArchiveBuilder` only contain the
 /// final hubris image (in both binary and ELF format), and are therefore likely
-/// unsuitable for many uses (including humility). The intented use for this
+/// unsuitable for many uses (including humility). The intended use for this
 /// (again, for now) is generating test data; see
 /// [`HubrisArchiveBuilder::with_fake_image()`].
 pub struct HubrisArchiveBuilder {
@@ -104,6 +104,8 @@ impl HubrisArchiveBuilder {
         archive.start_file("img/final.elf", opts)?;
         let elf = self.image.to_elf()?;
         archive.write_all(&elf).unwrap();
+
+        archive.start_file("img/final.bin", opts)?;
         let bin = self.image.to_binary()?;
         archive.write_all(&bin).unwrap();
 
