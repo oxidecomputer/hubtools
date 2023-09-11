@@ -67,6 +67,13 @@ pub enum Command {
     },
     /// Remove the signature from the archive (in-place)
     UnsignImage,
+    /// Verify an image against a set of CMPA/CFPA blobs
+    Verify {
+        /// CMPA path
+        cmpa: PathBuf,
+        /// CFPA path
+        cfpa: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -143,6 +150,27 @@ fn main() -> Result<()> {
         Command::UnsignImage => {
             archive.unsign()?;
             archive.overwrite()?;
+        }
+        Command::Verify { cmpa, cfpa } => {
+            let cmpa_contents = std::fs::read(cmpa)?;
+
+            if cmpa_contents.len() != 512 {
+                bail!("Bad CMPA file length");
+            }
+
+            let cfpa_contents = std::fs::read(cfpa)?;
+
+            if cfpa_contents.len() != 512 {
+                bail!("Bad CFPA file length");
+            }
+
+            let mut cmpa_bytes = [0u8; 512];
+            cmpa_bytes.copy_from_slice(&cmpa_contents[..]);
+
+            let mut cfpa_bytes = [0u8; 512];
+            cfpa_bytes.copy_from_slice(&cfpa_contents[..]);
+
+            archive.verify(&cmpa_bytes, &cfpa_bytes)?;
         }
     }
 

@@ -418,6 +418,12 @@ pub enum Error {
 
     #[error("cannot overwrite an in-memory archive")]
     CannotOverwriteInMemoryArchive,
+
+    #[error("Could not create a CMPA region")]
+    BadCMPA,
+
+    #[error("Could not create a CFPA region")]
+    BadCFPA,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -788,6 +794,22 @@ impl RawHubrisArchive {
     /// changes back to the archive on disk.
     pub fn replace(&mut self, data: Vec<u8>) {
         self.image.replace(data);
+    }
+
+    pub fn verify(
+        &mut self,
+        cmpa_bytes: &[u8; 512],
+        cfpa_bytes: &[u8; 512],
+    ) -> Result<(), Error> {
+        let cmpa = lpc55_areas::CMPAPage::from_bytes(cmpa_bytes)
+            .map_err(|_| Error::BadCMPA)?;
+
+        let cfpa = lpc55_areas::CFPAPage::from_bytes(cfpa_bytes)
+            .map_err(|_| Error::BadCFPA)?;
+
+        lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)
+            .map_err(Error::Lpc55)?;
+        Ok(())
     }
 }
 
