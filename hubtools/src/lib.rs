@@ -797,7 +797,7 @@ impl RawHubrisArchive {
     }
 
     pub fn verify(
-        &mut self,
+        &self,
         cmpa_bytes: &[u8; 512],
         cfpa_bytes: &[u8; 512],
     ) -> Result<(), Error> {
