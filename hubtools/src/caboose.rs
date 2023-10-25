@@ -119,7 +119,9 @@ impl CabooseBuilder {
             (tags::NAME, self.name),
             (tags::VERS, self.version),
         ] {
-            let Some(value) = maybe_value else { continue; };
+            let Some(value) = maybe_value else {
+                continue;
+            };
             pieces.push(tlvc_text::Piece::Chunk(
                 tlvc_text::Tag::new(tag),
                 vec![tlvc_text::Piece::String(value)],
