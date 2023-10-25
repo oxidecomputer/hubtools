@@ -676,20 +676,10 @@ impl RawHubrisArchive {
         Ok(caboose.as_slice().iter().all(|&c| c == 0xFF))
     }
 
-    /// Overwrites the existing archive with our modifications
-    ///
+    /// Returns a `Vec<u8>` with our modifications
     /// Changes are only made to the `img/final.*` files, as well as anything
-    /// listed in `self.new_files`. Only supported if this archive was opened
-    /// from an on-disk file via `RawHubrisArchive::load()`; not supported for
-    /// in-memory archives.
-    pub fn overwrite(mut self) -> Result<(), Error> {
-        // Ensure our archive came from an on-disk source. We can't actually
-        // extract the path here due to our mutation of `self` below, so we
-        // check here and then extract it below when it's time to write.
-        if !matches!(self.source, ArchiveSource::Disk(_)) {
-            return Err(Error::CannotOverwriteInMemoryArchive);
-        }
-
+    /// listed in `self.new_files`.
+    pub fn to_vec(mut self) -> Result<Vec<u8>, Error> {
         // Convert the SREC into all of our canonical file formats
         let elf = self.image.to_elf()?;
         self.add_file("img/final.elf", &elf)?;
@@ -732,14 +722,30 @@ impl RawHubrisArchive {
         out.finish()?;
         drop(out);
 
+        Ok(out_buf)
+    }
+
+    /// Overwrites the existing archive with our modifications
+    /// Only supported if this archive was opened from an on-disk
+    /// file via `RawHubrisArchive::load()`; not supported for
+    /// in-memory archives.
+    #[allow(unused_mut)]
+    pub fn overwrite(mut self) -> Result<(), Error> {
+        // Ensure our archive came from an on-disk source. We can't actually
+        // extract the path here due to our mutation of `self` below, so we
+        // check here and then extract it below when it's time to write.
         let path = match self.source {
-            ArchiveSource::Disk(path) => path,
+            ArchiveSource::Disk(ref path) => path.clone(),
             // We checked above that our source was `::Disk(_)`.
-            ArchiveSource::Memory => unreachable!(),
+            ArchiveSource::Memory => {
+                return Err(Error::CannotOverwriteInMemoryArchive)
+            }
         };
 
+        let out_buf = self.to_vec()?;
+
         std::fs::write(&path, out_buf)
-            .map_err(|e| Error::FileWriteFailed(path, e))?;
+            .map_err(|e| Error::FileWriteFailed(path.to_path_buf(), e))?;
         Ok(())
     }
 
