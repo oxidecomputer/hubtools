@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use hubtools::RawHubrisArchive;
+use hubtools::{bootleby_to_archive, HubrisArchiveBuilder, RawHubrisArchive};
 
 #[derive(Parser, Debug)]
 #[clap(name = "hubedit", max_term_width = 80)]
@@ -74,11 +74,29 @@ pub enum Command {
         /// CFPA path
         cfpa: PathBuf,
     },
+    /// Turn a generic ELF file into a hubris archive. This will also
+    /// fill in appropriate information for a caboose. Space must have
+    /// been pre-allocated for a header and caboose!
+    PackageElf {
+        /// Path to elf to be packaged
+        elf_file: PathBuf,
+        /// Name for the hubris archive
+        name: String,
+        /// Board name for the hubris archive
+        board: String,
+        /// Git has for the hubris archive
+        gitc: String,
+    },
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut archive = RawHubrisArchive::load(&args.archive)?;
+    let mut archive = match args.cmd {
+        Command::PackageElf { .. } => RawHubrisArchive::from_vec(
+            HubrisArchiveBuilder::with_fake_image().build_to_vec()?,
+        )?,
+        _ => RawHubrisArchive::load(&args.archive)?,
+    };
 
     match args.cmd {
         Command::ReadCaboose => {
@@ -171,6 +189,18 @@ fn main() -> Result<()> {
             cfpa_bytes.copy_from_slice(&cfpa_contents[..]);
 
             archive.verify(&cmpa_bytes, &cfpa_bytes)?;
+        }
+        Command::PackageElf {
+            elf_file,
+            board,
+            name,
+            gitc,
+        } => {
+            let archive = bootleby_to_archive(elf_file, board, name, gitc)?;
+
+            std::fs::write(&args.archive, archive)?;
+
+            println!("wrote archive to {}", args.archive);
         }
     }
 
