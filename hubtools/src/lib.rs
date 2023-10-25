@@ -1,7 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSegment};
 use path_slash::PathBufExt;
 use thiserror::Error;
 use x509_cert::Certificate;
@@ -14,9 +14,11 @@ use std::{
 };
 
 mod archive_builder;
+mod bootleby;
 mod caboose;
 
 pub use archive_builder::HubrisArchiveBuilder;
+pub use bootleby::bootleby_to_archive;
 pub use caboose::{Caboose, CabooseBuilder, CabooseError};
 
 #[derive(Debug)]
@@ -62,6 +64,27 @@ impl RawHubrisImage {
         Self::from_segments(&segments, kentry, 0xFF)
     }
 
+    /// Convert a not hubris binary into a hubris archive
+    pub fn from_generic_elf(elf_data: &[u8]) -> Result<Self, Error> {
+        let elf = object::read::File::parse(elf_data)?;
+        if elf.format() != object::BinaryFormat::Elf {
+            return Err(Error::NotAnElf(elf.format()));
+        }
+
+        let mut segments: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+
+        for s in elf.segments() {
+            if let Ok(d) = s.data() {
+                if !d.is_empty() {
+                    segments.insert(s.address() as u32, d.to_vec());
+                }
+            }
+        }
+
+        Self::from_segments(&segments, elf.entry().try_into().unwrap(), 0xFF)
+    }
+
+    /// For elfs from previously produced hubris archives
     pub fn from_elf(elf_data: &[u8]) -> Result<Self, Error> {
         let elf = object::read::File::parse(elf_data)?;
         if elf.format() != object::BinaryFormat::Elf {
@@ -430,6 +453,18 @@ pub enum Error {
 
     #[error("Missing certificates for LPC55 signing")]
     MissingCerts,
+
+    #[error(".header section is too small")]
+    HeaderTooSmall,
+
+    #[error("Missing .header section")]
+    MissingHeader,
+
+    #[error("Bad file range for .header")]
+    BadFileRange,
+
+    #[error("Bad prefix")]
+    BadPrefix,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -880,9 +915,18 @@ impl RawHubrisArchive {
 }
 
 mod header {
+    use zerocopy::{AsBytes, FromBytes};
+
     // Defined in the kernel ABI crate - we support both the original and
     // new-style magic numbers, which use the same header layout.
     pub(crate) const MAGIC: [u32; 2] = [0x15356637, 0x64_CE_D6_CA];
+
+    #[derive(Default, AsBytes, FromBytes)]
+    #[repr(C)]
+    pub(crate) struct ImageHeader {
+        pub magic: u32,
+        pub total_image_len: u32,
+    }
 
     // The header is located in one of a few locations, depending on MCU
     // and versions of the PAC crates.
