@@ -424,6 +424,12 @@ pub enum Error {
 
     #[error("Could not create a CFPA region")]
     BadCFPA,
+
+    #[error("Bad signature length")]
+    BadSignatureLength,
+
+    #[error("Missing certificates for LPC55 signing")]
+    MissingCerts,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -760,6 +766,17 @@ impl RawHubrisArchive {
         private_key: &rsa::RsaPrivateKey,
         execution_address: u32,
     ) -> Result<(), Error> {
+        let _ = self.is_lpc55()?;
+
+        self.image.sign(
+            signing_certs,
+            root_certs,
+            private_key,
+            execution_address,
+        )
+    }
+
+    fn is_lpc55(&self) -> Result<(), Error> {
         let manifest = self.extract_file("app.toml")?;
         let manifest: toml::Value = toml::from_str(
             std::str::from_utf8(&manifest).map_err(Error::BadManifest)?,
@@ -775,19 +792,58 @@ impl RawHubrisArchive {
             .to_owned();
 
         if !chip.contains("lpc55") {
-            return Err(Error::WrongChip(chip));
+            Err(Error::WrongChip(chip))
+        } else {
+            Ok(())
         }
+    }
 
-        self.image.sign(
-            signing_certs,
-            root_certs,
-            private_key,
-            execution_address,
-        )
+    /// Unsign the image and re-stamp for signing, including an updated
+    /// version for the caboose
+    pub fn restamp(
+        &mut self,
+        root_certs: Vec<Certificate>,
+        signing_certs: Vec<Certificate>,
+        version: Option<&String>,
+    ) -> Result<Vec<u8>, Error> {
+        match self.is_lpc55() {
+            Ok(_) => {
+                let _ = self.unsign()?;
+                // Need to write the caboose _after_ we unsign
+                self.write_default_caboose(version)?;
+                let stamped = lpc55_sign::signed_image::stamp_image(
+                    self.image.data.clone(),
+                    signing_certs,
+                    root_certs,
+                    0,
+                )?;
+                Ok(stamped)
+            }
+            Err(_) => {
+                self.write_default_caboose(version)?;
+                // Not an LPC55 image, just return the image back for now
+                self.image.to_binary()
+            }
+        }
+    }
+
+    /// Add a signature to a binary
+    pub fn append_signature(&mut self, sig: &[u8]) -> Result<(), Error> {
+        match self.is_lpc55() {
+            Ok(_) => {
+                let mut b = self.image.to_binary()?;
+                b.extend_from_slice(sig);
+                self.replace(b);
+                return Ok(());
+            }
+            // Do nothing on non LPC55 chips at the moment
+            Err(_) => Ok(()),
+        }
     }
 
     /// Strips any existing signature from the image.
     pub fn unsign(&mut self) -> Result<(), Error> {
+        let _ = self.is_lpc55()?;
         self.image.unsign()
     }
 
