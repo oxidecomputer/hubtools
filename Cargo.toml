@@ -1,5 +1,6 @@
 [workspace]
 members = ["hubedit", "hubtools"]
+resolver = "2"
 
 [workspace.dependencies]
 hubtools.path = "hubtools"
