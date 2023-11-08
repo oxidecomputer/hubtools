@@ -21,6 +21,13 @@ pub struct Args {
 
 #[derive(Parser, Debug)]
 pub enum Command {
+    /// Add a file to a Hubris Archive
+    AddFile {
+        /// File name for the archive
+        file_name: String,
+        /// File contents to add
+        contents: PathBuf,
+    },
     ReadCaboose,
     WriteCaboose {
         #[clap(short, long)]
@@ -201,6 +208,16 @@ fn main() -> Result<()> {
             std::fs::write(&args.archive, archive)?;
 
             println!("wrote archive to {}", args.archive);
+        }
+        Command::AddFile {
+            file_name,
+            contents,
+        } => {
+            let bytes = std::fs::read(contents)?;
+            archive.add_file(&file_name, &bytes)?;
+            archive.overwrite()?;
+
+            println!("Added file name {}, {} bytes", file_name, bytes.len());
         }
     }
 
