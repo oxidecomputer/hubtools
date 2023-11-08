@@ -766,7 +766,7 @@ impl RawHubrisArchive {
         private_key: &rsa::RsaPrivateKey,
         execution_address: u32,
     ) -> Result<(), Error> {
-        let _ = self.is_lpc55()?;
+        self.is_lpc55()?;
 
         self.image.sign(
             signing_certs,
@@ -808,7 +808,7 @@ impl RawHubrisArchive {
     ) -> Result<Vec<u8>, Error> {
         match self.is_lpc55() {
             Ok(_) => {
-                let _ = self.unsign()?;
+                let _ = self.unsign();
                 // Need to write the caboose _after_ we unsign
                 self.write_default_caboose(version)?;
                 let stamped = lpc55_sign::signed_image::stamp_image(
@@ -834,7 +834,7 @@ impl RawHubrisArchive {
                 let mut b = self.image.to_binary()?;
                 b.extend_from_slice(sig);
                 self.replace(b);
-                return Ok(());
+                Ok(())
             }
             // Do nothing on non LPC55 chips at the moment
             Err(_) => Ok(()),
@@ -843,7 +843,7 @@ impl RawHubrisArchive {
 
     /// Strips any existing signature from the image.
     pub fn unsign(&mut self) -> Result<(), Error> {
-        let _ = self.is_lpc55()?;
+        self.is_lpc55()?;
         self.image.unsign()
     }
 
