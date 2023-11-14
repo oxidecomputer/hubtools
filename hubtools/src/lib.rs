@@ -836,8 +836,12 @@ impl RawHubrisArchive {
                 self.replace(b);
                 Ok(())
             }
-            // Do nothing on non LPC55 chips at the moment
-            Err(_) => Ok(()),
+            Err(_) => {
+                // Save the signature as signature.txt for now until we
+                // figure out what to do with it
+                self.add_file("signature.txt", sig)?;
+                Ok(())
+            }
         }
     }
 
