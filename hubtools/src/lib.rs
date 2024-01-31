@@ -465,6 +465,12 @@ pub enum Error {
 
     #[error("Bad prefix")]
     BadPrefix,
+
+    #[error("TLVC: {0}")]
+    Tlvc(String),
+
+    #[error("packing error: {0}")]
+    PackingError(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -582,6 +588,11 @@ impl RawHubrisArchive {
         self.extract_file("img/auxi.tlvc")
     }
 
+    /// Extract manufacturing configuration file (currently just CMPA/CFPA)
+    pub fn manufacturing_cfg(&self) -> Result<Vec<u8>, Error> {
+        self.extract_file("build_cfg/mfg_cfg.toml")
+    }
+
     /// Extracts a file from the ZIP archive by name
     pub fn extract_file(&self, name: &str) -> Result<Vec<u8>, Error> {
         let cursor = Cursor::new(self.zip.as_slice());
@@ -618,7 +629,7 @@ impl RawHubrisArchive {
         Ok(())
     }
 
-    /// Writes a default caboose
+    /// Generates a default caboose
     ///
     /// The default caboose includes the following tags:
     /// - `GITC`: the current Git commit with an optional trailing "-dirty"
@@ -627,10 +638,10 @@ impl RawHubrisArchive {
     /// - `VERS`: the provided version string (if present)
     ///
     /// Everything except `VERS` are extracted from the Hubris archive itself.
-    pub fn write_default_caboose(
+    fn generate_default_caboose(
         &mut self,
         version: Option<&String>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<tlvc_text::Piece>, Error> {
         let manifest = self.extract_file("app.toml")?;
         let git = self.extract_file("git-rev")?;
 
@@ -694,7 +705,14 @@ impl RawHubrisArchive {
             );
             chunks.push(data)
         }
-        let out = tlvc_text::pack(&chunks);
+        Ok(chunks)
+    }
+
+    pub fn write_default_caboose(
+        &mut self,
+        version: Option<&String>,
+    ) -> Result<(), Error> {
+        let out = tlvc_text::pack(&self.generate_default_caboose(version)?);
         self.write_caboose(&out)
     }
 
@@ -844,8 +862,47 @@ impl RawHubrisArchive {
         match self.is_lpc55() {
             Ok(_) => {
                 let _ = self.unsign();
+                self.erase_caboose()?;
                 // Need to write the caboose _after_ we unsign
-                self.write_default_caboose(version)?;
+
+                let rotkh = lpc55_sign::signed_image::root_key_table_hash(
+                    &lpc55_sign::signed_image::pad_roots(root_certs.clone())?,
+                )?;
+
+                if let Ok(cfile) = self.manufacturing_cfg() {
+                    let cfg: lpc55_sign::signed_image::MfgCfg = toml::from_str(
+                        std::str::from_utf8(&cfile)
+                            .map_err(Error::BadManifest)?,
+                    )
+                    .map_err(Error::BadToml)?;
+
+                    let mut cfpa = cfg.cfpa.generate()?;
+                    // We don't lock right now
+                    let mut cmpa = cfg.cmpa.generate(false, rotkh)?;
+                    self.add_file(
+                        "cmpa.bin",
+                        &cmpa.to_vec().map_err(|e| {
+                            Error::PackingError(format!("{:?}", e))
+                        })?,
+                    )?;
+                    self.add_file(
+                        "cfpa.bin",
+                        &cfpa.to_vec().map_err(|e| {
+                            Error::PackingError(format!("{:?}", e))
+                        })?,
+                    )?;
+                }
+
+                let mut caboose = self.generate_default_caboose(version)?;
+
+                caboose.push(tlvc_text::Piece::Chunk(
+                    tlvc_text::Tag::new(caboose::tags::SIGN),
+                    vec![tlvc_text::Piece::String(hex::encode(rotkh))],
+                ));
+
+                let out = tlvc_text::pack(&caboose);
+                self.write_caboose(&out)?;
+
                 let stamped = lpc55_sign::signed_image::stamp_image(
                     self.image.data.clone(),
                     signing_certs,
