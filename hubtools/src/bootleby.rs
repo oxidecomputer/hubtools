@@ -62,8 +62,7 @@ fn add_image_header(path: PathBuf) -> Result<Vec<u8>, Error> {
     // work on the file path and return the bytes
     let mut f = std::fs::read(path).map_err(Error::FileReadError)?;
 
-    let elf =
-        object::read::File::parse(&*f).map_err(Error::ObjectError)?;
+    let elf = object::read::File::parse(&*f).map_err(Error::ObjectError)?;
     if elf.format() != object::BinaryFormat::Elf {
         return Err(Error::NotAnElf(elf.format()));
     }

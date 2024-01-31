@@ -80,6 +80,7 @@ pub(crate) mod tags {
     pub(crate) const BORD: [u8; 4] = *b"BORD";
     pub(crate) const NAME: [u8; 4] = *b"NAME";
     pub(crate) const VERS: [u8; 4] = *b"VERS";
+    pub(crate) const SIGN: [u8; 4] = *b"SIGN";
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
