@@ -495,6 +495,9 @@ pub enum Error {
 
     #[error("Failed to convert TOML int to u32: {0}")]
     BadInt(std::num::TryFromIntError),
+
+    #[error("Error accessing zip index {1}")]
+    BadFileIndex(#[source] zip::result::ZipError, usize),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -523,6 +526,9 @@ pub struct RawHubrisArchive {
 
     /// Raw data from the image
     pub image: RawHubrisImage,
+
+    /// hubris archive version
+    pub archive_version: u32,
 }
 
 impl RawHubrisArchive {
@@ -547,16 +553,15 @@ impl RawHubrisArchive {
         let comment = std::str::from_utf8(archive.comment())
             .map_err(Error::BadCommentEncoding)?;
 
-        match comment.strip_prefix("hubris build archive v") {
-            Some(v) => {
-                let _v: u32 = v
+        let archive_version =
+            match comment.strip_prefix("hubris build archive v") {
+                Some(v) => v
                     .parse()
-                    .map_err(|e| Error::BadVersionString(e, v.to_owned()))?;
-            }
-            None => {
-                return Err(Error::BadComment(comment.to_owned()));
-            }
-        }
+                    .map_err(|e| Error::BadVersionString(e, v.to_owned()))?,
+                None => {
+                    return Err(Error::BadComment(comment.to_owned()));
+                }
+            };
 
         let image = {
             const ELF_FILE: &str = "img/final.elf";
@@ -573,6 +578,7 @@ impl RawHubrisArchive {
             zip: contents,
             new_files: BTreeMap::new(),
             image,
+            archive_version,
         })
     }
 
@@ -590,6 +596,11 @@ impl RawHubrisArchive {
                 Err(Error::DuplicateFilename(name.to_string()))
             }
         }
+    }
+
+    /// Extract the hubris archive version
+    pub fn archive_version(&self) -> u32 {
+        self.archive_version
     }
 
     /// Reads the caboose from local memory
@@ -625,6 +636,34 @@ impl RawHubrisArchive {
         file.read_to_end(&mut buffer)
             .map_err(Error::FileReadError)?;
         Ok(buffer)
+    }
+
+    /// Extacts a file from the ZIP archive by index
+    ///
+    /// Returns a tuple of `(file name, contents)` or an error
+    pub fn extract_file_by_index(
+        &self,
+        index: usize,
+    ) -> Result<(String, Vec<u8>), Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+        let mut file = archive
+            .by_index(index)
+            .map_err(|e| Error::BadFileIndex(e, index))?;
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer)
+            .map_err(Error::FileReadError)?;
+        Ok((file.name().to_string(), buffer))
+    }
+
+    /// Gets the total number of files in the archive
+    pub fn file_count(&self) -> Result<usize, Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+
+        Ok(archive.len())
     }
 
     /// Writes to the caboose in local memory
