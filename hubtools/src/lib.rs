@@ -571,6 +571,27 @@ impl RawHubrisArchive {
         }
     }
 
+    /// Extract the hubris archive version
+    pub fn archive_version(&self) -> Result<usize, Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+        let comment = std::str::from_utf8(archive.comment())
+            .map_err(Error::BadCommentEncoding)?;
+
+        match comment.strip_prefix("hubris build archive v") {
+            Some(v) => {
+                let v: usize = v
+                    .parse()
+                    .map_err(|e| Error::BadVersionString(e, v.to_owned()))?;
+                return Ok(v);
+            }
+            None => {
+                return Err(Error::BadComment(comment.to_owned()));
+            }
+        }
+    }
+
     /// Reads the caboose from local memory
     pub fn read_caboose(&self) -> Result<Caboose, Error> {
         // Skip the start and end word, which are markers
