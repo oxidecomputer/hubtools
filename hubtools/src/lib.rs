@@ -471,6 +471,9 @@ pub enum Error {
 
     #[error("packing error: {0}")]
     PackingError(String),
+
+    #[error("Error accessing index {1}: {0}")]
+    BadFileIndex(zip::result::ZipError, usize),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -605,6 +608,32 @@ impl RawHubrisArchive {
         file.read_to_end(&mut buffer)
             .map_err(Error::FileReadError)?;
         Ok(buffer)
+    }
+
+    /// Extacts a file from the ZIP archive by index
+    pub fn extract_file_by_index(
+        &self,
+        index: usize,
+    ) -> Result<(String, Vec<u8>), Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+        let mut file = archive
+            .by_index(index)
+            .map_err(|e| Error::BadFileIndex(e, index))?;
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer)
+            .map_err(Error::FileReadError)?;
+        Ok((file.name().to_string(), buffer))
+    }
+
+    /// Gets the total number of files in the archive
+    pub fn file_count(&self) -> Result<usize, Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+
+        Ok(archive.len())
     }
 
     /// Writes to the caboose in local memory
