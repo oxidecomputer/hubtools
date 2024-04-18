@@ -44,6 +44,10 @@ impl Caboose {
         self.get_tag(tags::VERS)
     }
 
+    pub fn sign(&self) -> Result<&[u8], CabooseError> {
+        self.get_tag(tags::SIGN)
+    }
+
     fn get_tag(&self, tag: [u8; 4]) -> Result<&[u8], CabooseError> {
         use tlvc::TlvcReader;
         let mut reader = TlvcReader::begin(self.as_slice())
