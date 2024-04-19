@@ -93,6 +93,7 @@ pub struct CabooseBuilder {
     board: Option<String>,
     name: Option<String>,
     version: Option<String>,
+    sign: Option<String>,
 }
 
 impl CabooseBuilder {
@@ -116,6 +117,11 @@ impl CabooseBuilder {
         self
     }
 
+    pub fn sign<S: Into<String>>(mut self, sign: S) -> Self {
+        self.sign = Some(sign.into());
+        self
+    }
+
     pub fn build(self) -> Caboose {
         let mut pieces = Vec::new();
         for (tag, maybe_value) in [
@@ -123,6 +129,7 @@ impl CabooseBuilder {
             (tags::BORD, self.board),
             (tags::NAME, self.name),
             (tags::VERS, self.version),
+            (tags::SIGN, self.sign),
         ] {
             let Some(value) = maybe_value else {
                 continue;
