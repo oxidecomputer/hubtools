@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "hubtools"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "hex",
  "lpc55_areas",
