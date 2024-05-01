@@ -34,6 +34,9 @@ pub enum Command {
         version: String,
 
         #[clap(short, long)]
+        epoch: Option<u32>,
+
+        #[clap(short, long)]
         force: bool,
 
         /// Do not write default caboose parameters
@@ -93,6 +96,8 @@ pub enum Command {
         board: String,
         /// Git has for the hubris archive
         gitc: String,
+        /// Epoch for rollback protection
+        epoch: Option<u32>,
     },
 }
 
@@ -129,6 +134,7 @@ fn main() -> Result<()> {
         }
         Command::WriteCaboose {
             version,
+            epoch,
             force,
             no_defaults,
         } => {
@@ -143,9 +149,9 @@ fn main() -> Result<()> {
                 }
             }
             if no_defaults {
-                archive.write_version_to_caboose(&version)?;
+                archive.write_version_to_caboose(&version, epoch)?;
             } else {
-                archive.write_default_caboose(Some(&version))?;
+                archive.write_default_caboose(Some(&version), epoch)?;
             }
             archive.overwrite()?;
         }
@@ -202,8 +208,10 @@ fn main() -> Result<()> {
             board,
             name,
             gitc,
+            epoch,
         } => {
-            let archive = bootleby_to_archive(elf_file, board, name, gitc)?;
+            let archive =
+                bootleby_to_archive(elf_file, board, name, gitc, epoch)?;
 
             std::fs::write(&args.archive, archive)?;
 

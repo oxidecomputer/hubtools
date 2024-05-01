@@ -72,10 +72,7 @@ fn add_image_header(path: PathBuf) -> Result<Vec<u8>, Error> {
     let offset = header_offset(&elf)?;
     drop(elf);
 
-    let header = header::ImageHeader {
-        magic: 0x64_CE_D6_CA,
-        total_image_len: len as u32,
-    };
+    let header = header::ImageHeader::new(len as usize);
 
     header
         .write_to_prefix(&mut f[(offset as usize)..])
@@ -89,6 +86,7 @@ pub fn bootleby_to_archive(
     board: String,
     name: String,
     gitc: String,
+    epoc: Option<u32>,
 ) -> Result<Vec<u8>, Error> {
     let f = add_image_header(path)?;
 
@@ -103,8 +101,11 @@ pub fn bootleby_to_archive(
         name = "{}"
         board = "{}"
         chip = "lpc55"
+        epoch = {}
         "#,
-        name, board
+        name,
+        board,
+        epoc.unwrap_or(0u32)
     );
 
     archive.add_file("elf/kernel", &f)?;
