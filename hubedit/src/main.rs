@@ -34,6 +34,9 @@ pub enum Command {
         version: String,
 
         #[clap(short, long)]
+        epoch: Option<String>,
+
+        #[clap(short, long)]
         force: bool,
 
         /// Do not write default caboose parameters
@@ -129,6 +132,7 @@ fn main() -> Result<()> {
         }
         Command::WriteCaboose {
             version,
+            epoch,
             force,
             no_defaults,
         } => {
@@ -143,9 +147,9 @@ fn main() -> Result<()> {
                 }
             }
             if no_defaults {
-                archive.write_version_to_caboose(&version)?;
+                archive.write_version_to_caboose(&version, epoch.as_ref())?;
             } else {
-                archive.write_default_caboose(Some(&version))?;
+                archive.write_default_caboose(Some(&version), epoch.as_ref())?;
             }
             archive.overwrite()?;
         }

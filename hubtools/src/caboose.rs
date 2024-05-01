@@ -48,6 +48,10 @@ impl Caboose {
         self.get_tag(tags::SIGN)
     }
 
+    pub fn epoch(&self) -> Result<&[u8], CabooseError> {
+        self.get_tag(tags::EPOC)
+    }
+
     fn get_tag(&self, tag: [u8; 4]) -> Result<&[u8], CabooseError> {
         use tlvc::TlvcReader;
         let mut reader = TlvcReader::begin(self.as_slice())
@@ -85,6 +89,7 @@ pub(crate) mod tags {
     pub(crate) const NAME: [u8; 4] = *b"NAME";
     pub(crate) const VERS: [u8; 4] = *b"VERS";
     pub(crate) const SIGN: [u8; 4] = *b"SIGN";
+    pub(crate) const EPOC: [u8; 4] = *b"EPOC";
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -94,6 +99,7 @@ pub struct CabooseBuilder {
     name: Option<String>,
     version: Option<String>,
     sign: Option<String>,
+    epoch: Option<String>,
 }
 
 impl CabooseBuilder {
@@ -122,6 +128,19 @@ impl CabooseBuilder {
         self
     }
 
+    pub fn epoch<S: Into<String>>(mut self, epoch: S) -> Self {
+        let epoch: String = epoch.into();
+        match epoch.len() {
+            0 => self.epoch = Some("0000000000".to_string()),
+            _ => {
+                if let Ok(epoch) = epoch.parse::<u32>() {
+                    self.epoch = Some(format!("{epoch:010}").to_owned());
+                }
+            }
+        }
+        self
+    }
+
     pub fn build(self) -> Caboose {
         let mut pieces = Vec::new();
         for (tag, maybe_value) in [
@@ -130,6 +149,7 @@ impl CabooseBuilder {
             (tags::NAME, self.name),
             (tags::VERS, self.version),
             (tags::SIGN, self.sign),
+            (tags::EPOC, self.epoch),
         ] {
             let Some(value) = maybe_value else {
                 continue;
@@ -166,6 +186,10 @@ mod tests {
             caboose.version(),
             Err(CabooseError::MissingTag { tag: tags::VERS })
         );
+        assert_eq!(
+            caboose.epoch(),
+            Err(CabooseError::MissingTag { tag: tags::EPOC })
+        );
     }
 
     #[test]
@@ -184,6 +208,10 @@ mod tests {
             caboose.version(),
             Err(CabooseError::MissingTag { tag: tags::VERS })
         );
+        assert_eq!(
+            caboose.epoch(),
+            Err(CabooseError::MissingTag { tag: tags::EPOC })
+        );
     }
 
     #[test]
@@ -193,10 +221,41 @@ mod tests {
             .board("bar")
             .name("fizz")
             .version("buzz")
+            .epoch("")
             .build();
         assert_eq!(caboose.git_commit(), Ok("foo".as_bytes()));
         assert_eq!(caboose.board(), Ok("bar".as_bytes()));
         assert_eq!(caboose.name(), Ok("fizz".as_bytes()));
         assert_eq!(caboose.version(), Ok("buzz".as_bytes()));
+        assert_eq!(caboose.epoch(), Ok("0000000000".as_bytes()));
+    }
+
+    #[test]
+    fn builder_can_make_caboose_with_non_zero_epoch() {
+        let caboose = CabooseBuilder::default().epoch("1234567890").build();
+        assert_eq!(caboose.epoch(), Ok("1234567890".as_bytes()));
+    }
+
+    #[test]
+    fn builder_will_normalize_empty_epoch() {
+        let caboose = CabooseBuilder::default().epoch("").build();
+        assert_eq!(caboose.epoch(), Ok("0000000000".as_bytes()));
+    }
+
+    #[test]
+    fn builder_will_normalize_short_epoch() {
+        let caboose = CabooseBuilder::default().epoch("1234").build();
+        assert_eq!(caboose.epoch(), Ok("0000001234".as_bytes()));
+    }
+
+    #[test]
+    fn builder_will_ignore_u64_epoch() {
+        let caboose = CabooseBuilder::default()
+            .epoch("4294967296") // u32::MAX_VALUE + 1
+            .build();
+        assert_eq!(
+            caboose.epoch(),
+            Err(CabooseError::MissingTag { tag: tags::EPOC })
+        );
     }
 }
