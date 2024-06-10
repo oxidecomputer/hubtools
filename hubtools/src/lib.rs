@@ -471,6 +471,9 @@ pub enum Error {
 
     #[error("packing error: {0}")]
     PackingError(String),
+
+    #[error("invalid epoch value: {0}")]
+    InvalidEpoch(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -614,21 +617,6 @@ impl RawHubrisArchive {
         self.image.write_caboose(data)
     }
 
-    /// Writes the given version (and nothing else) to the caboose
-    pub fn write_version_to_caboose(
-        &mut self,
-        version: &str,
-    ) -> Result<(), Error> {
-        // Manually build the TLV-C data for the caboose
-        let data = tlvc_text::Piece::Chunk(
-            tlvc_text::Tag::new(caboose::tags::VERS),
-            vec![tlvc_text::Piece::String(version.to_owned())],
-        );
-        let out = tlvc_text::pack(&[data]);
-        self.write_caboose(&out)?;
-        Ok(())
-    }
-
     /// Generates a default caboose
     ///
     /// The default caboose includes the following tags:
@@ -636,11 +624,13 @@ impl RawHubrisArchive {
     /// - `NAME`: image name
     /// - `BORD`: board name
     /// - `VERS`: the provided version string (if present)
+    /// - 'EPOC': epoch value for rollback protection during update
     ///
     /// Everything except `VERS` are extracted from the Hubris archive itself.
     fn generate_default_caboose(
         &mut self,
         version: Option<&String>,
+        epoch: Option<&String>,
     ) -> Result<Vec<tlvc_text::Piece>, Error> {
         let manifest = self.extract_file("app.toml")?;
         let git = self.extract_file("git-rev")?;
@@ -666,9 +656,32 @@ impl RawHubrisArchive {
             .as_str()
             .ok_or(Error::BadTomlType)?
             .to_owned();
+        // Hubris has an epoch in the app.toml but Bootleby does not.
+        // CLI arg overrides app.toml, value will default to zero.
+        let epoc: u32 = if let Some(param) = epoch {
+            param
+                .parse::<u32>()
+                .map_err(|_| Error::InvalidEpoch(param.to_string()))?
+        } else if let Some(param) =
+            manifest.as_table().ok_or(Error::BadTomlType)?.get("epoch")
+        {
+            // Bare integers in app.toml are returned as i64.
+            let toml_int = param.as_integer().ok_or(Error::BadTomlType)?;
+            u32::try_from(toml_int).map_err(|_| {
+                Error::InvalidEpoch(format!("epoch from toml = {}", toml_int))
+            })?
+        } else {
+            // Default is zero if missing from app.toml
+            0u32
+        };
+        // EPOC in the caboose is a ascii decimal number representing a u32.
+        // A  missing EPOC tag is equivalent to EPOC="0".
+        // Anything else represents some future scheme or an error that will
+        // be rejected by the Hubris update_server.
+        let caboose_epoc = format!("{epoc}").to_owned();
 
         // If this Hubris archive used our TOML inheritance system, then the
-        // name could be overridded in the `patches.toml` file.
+        // name could be overridden in the `patches.toml` file.
         if let Ok(patches) = self.extract_file("patches.toml") {
             let patches: toml::Value = toml::from_str(
                 std::str::from_utf8(&patches).map_err(Error::BadManifest)?,
@@ -697,6 +710,10 @@ impl RawHubrisArchive {
                 tlvc_text::Tag::new(caboose::tags::NAME),
                 vec![tlvc_text::Piece::String(name)],
             ),
+            tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(caboose::tags::EPOC),
+                vec![tlvc_text::Piece::String(caboose_epoc)],
+            ),
         ];
         if let Some(v) = version {
             let data = tlvc_text::Piece::Chunk(
@@ -711,8 +728,10 @@ impl RawHubrisArchive {
     pub fn write_default_caboose(
         &mut self,
         version: Option<&String>,
+        epoch: Option<&String>,
     ) -> Result<(), Error> {
-        let out = tlvc_text::pack(&self.generate_default_caboose(version)?);
+        let out =
+            tlvc_text::pack(&self.generate_default_caboose(version, epoch)?);
         self.write_caboose(&out)
     }
 
@@ -858,6 +877,7 @@ impl RawHubrisArchive {
         root_certs: Vec<Certificate>,
         signing_certs: Vec<Certificate>,
         version: Option<&String>,
+        epoch: Option<&String>,
     ) -> Result<Vec<u8>, Error> {
         match self.is_lpc55() {
             Ok(_) => {
@@ -893,7 +913,8 @@ impl RawHubrisArchive {
                     )?;
                 }
 
-                let mut caboose = self.generate_default_caboose(version)?;
+                let mut caboose =
+                    self.generate_default_caboose(version, epoch)?;
 
                 caboose.push(tlvc_text::Piece::Chunk(
                     tlvc_text::Tag::new(caboose::tags::SIGN),
@@ -912,7 +933,7 @@ impl RawHubrisArchive {
                 Ok(stamped)
             }
             Err(_) => {
-                self.write_default_caboose(version)?;
+                self.write_default_caboose(version, epoch)?;
                 // Not an LPC55 image, just return the image back for now
                 self.image.to_binary()
             }
