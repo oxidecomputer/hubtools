@@ -624,14 +624,14 @@ impl RawHubrisArchive {
         epoch: Option<&String>,
     ) -> Result<(), Error> {
         // Manually build the TLV-C data for the caboose
-        let mut chunks = vec![
-            tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(caboose::tags::VERS),
-                vec![tlvc_text::Piece::String(version.to_owned())],
-            ),
-        ];
+        let mut chunks = vec![tlvc_text::Piece::Chunk(
+            tlvc_text::Tag::new(caboose::tags::VERS),
+            vec![tlvc_text::Piece::String(version.to_owned())],
+        )];
         if let Some(param) = epoch {
-            let epoc = param.parse::<u32>().map_err(|_| Error::InvalidEpoch(param.to_string()))?;
+            let epoc = param
+                .parse::<u32>()
+                .map_err(|_| Error::InvalidEpoch(param.to_string()))?;
             let caboose_epoc = format!("{epoc}").to_owned();
             let data = tlvc_text::Piece::Chunk(
                 tlvc_text::Tag::new(caboose::tags::EPOC),
@@ -686,17 +686,25 @@ impl RawHubrisArchive {
         // Hubris has an epoch in the app.toml but Bootleby does not.
         // CLI arg overrides app.toml, value will default to zero.
         let epoc: u32 = if let Some(param) = epoch {
-            param.parse::<u32>().map_err(|_| Error::InvalidEpoch(param.to_string()))?
-        } else if let Some(param) = manifest.as_table().ok_or(Error::BadTomlType)?.get("epoch") {
+            param
+                .parse::<u32>()
+                .map_err(|_| Error::InvalidEpoch(param.to_string()))?
+        } else if let Some(param) =
+            manifest.as_table().ok_or(Error::BadTomlType)?.get("epoch")
+        {
+            // Bare integers in app.toml are returned as i64.
             let toml_int = param.as_integer().ok_or(Error::BadTomlType)?;
-            u32::try_from(toml_int).map_err(|_| Error::InvalidEpoch(format!("epoch from toml = {}", toml_int)))?
+            u32::try_from(toml_int).map_err(|_| {
+                Error::InvalidEpoch(format!("epoch from toml = {}", toml_int))
+            })?
         } else {
             // Default is zero if missing from app.toml
             0u32
         };
-        // EPOC in the caboose is a u32, zero-padded 10-digit ascii number.
-        // Missing EPOC or all-zeros is equivalent to EPOC zero.
-        // Anything else represents some future scheme or a typo in toml file.
+        // EPOC in the caboose is a ascii decimal number representing a u32.
+        // A  missing EPOC tag is equivalent to EPOC="0".
+        // Anything else represents some future scheme or an error that will
+        // be rejected by the Hubris update_server.
         let caboose_epoc = format!("{epoc}").to_owned();
 
         // If this Hubris archive used our TOML inheritance system, then the
@@ -749,7 +757,8 @@ impl RawHubrisArchive {
         version: Option<&String>,
         epoch: Option<&String>,
     ) -> Result<(), Error> {
-        let out = tlvc_text::pack(&self.generate_default_caboose(version, epoch)?);
+        let out =
+            tlvc_text::pack(&self.generate_default_caboose(version, epoch)?);
         self.write_caboose(&out)
     }
 
@@ -931,7 +940,8 @@ impl RawHubrisArchive {
                     )?;
                 }
 
-                let mut caboose = self.generate_default_caboose(version, epoch)?;
+                let mut caboose =
+                    self.generate_default_caboose(version, epoch)?;
 
                 caboose.push(tlvc_text::Piece::Chunk(
                     tlvc_text::Tag::new(caboose::tags::SIGN),
