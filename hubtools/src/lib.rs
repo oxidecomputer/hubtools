@@ -617,33 +617,6 @@ impl RawHubrisArchive {
         self.image.write_caboose(data)
     }
 
-    /// Writes the given version (and nothing else) to the caboose
-    pub fn write_version_to_caboose(
-        &mut self,
-        version: &str,
-        epoch: Option<&String>,
-    ) -> Result<(), Error> {
-        // Manually build the TLV-C data for the caboose
-        let mut chunks = vec![tlvc_text::Piece::Chunk(
-            tlvc_text::Tag::new(caboose::tags::VERS),
-            vec![tlvc_text::Piece::String(version.to_owned())],
-        )];
-        if let Some(param) = epoch {
-            let epoc = param
-                .parse::<u32>()
-                .map_err(|_| Error::InvalidEpoch(param.to_string()))?;
-            let caboose_epoc = format!("{epoc}").to_owned();
-            let data = tlvc_text::Piece::Chunk(
-                tlvc_text::Tag::new(caboose::tags::EPOC),
-                vec![tlvc_text::Piece::String(caboose_epoc)],
-            );
-            chunks.push(data);
-        }
-        let out = tlvc_text::pack(&chunks);
-        self.write_caboose(&out)?;
-        Ok(())
-    }
-
     /// Generates a default caboose
     ///
     /// The default caboose includes the following tags:

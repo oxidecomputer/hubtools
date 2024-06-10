@@ -38,10 +38,6 @@ pub enum Command {
 
         #[clap(short, long)]
         force: bool,
-
-        /// Do not write default caboose parameters
-        #[clap(short, long)]
-        no_defaults: bool,
     },
     EraseCaboose {
         #[clap(short, long)]
@@ -134,7 +130,6 @@ fn main() -> Result<()> {
             version,
             epoch,
             force,
-            no_defaults,
         } => {
             if !archive.is_caboose_empty()? {
                 if force {
@@ -146,11 +141,7 @@ fn main() -> Result<()> {
                     );
                 }
             }
-            if no_defaults {
-                archive.write_version_to_caboose(&version, epoch.as_ref())?;
-            } else {
-                archive.write_default_caboose(Some(&version), epoch.as_ref())?;
-            }
+            archive.write_default_caboose(Some(&version), epoch.as_ref())?;
             archive.overwrite()?;
         }
         Command::EraseCaboose { force } => {
