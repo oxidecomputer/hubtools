@@ -632,7 +632,7 @@ impl RawHubrisArchive {
         ];
         if let Some(param) = epoch {
             let epoc = param.parse::<u32>().map_err(|_| Error::InvalidEpoch(param.to_string()))?;
-            let caboose_epoc = format!("{:010}", epoc).to_owned();
+            let caboose_epoc = format!("{epoc}").to_owned();
             let data = tlvc_text::Piece::Chunk(
                 tlvc_text::Tag::new(caboose::tags::EPOC),
                 vec![tlvc_text::Piece::String(caboose_epoc)],
@@ -697,7 +697,7 @@ impl RawHubrisArchive {
         // EPOC in the caboose is a u32, zero-padded 10-digit ascii number.
         // Missing EPOC or all-zeros is equivalent to EPOC zero.
         // Anything else represents some future scheme or a typo in toml file.
-        let caboose_epoc = format!("{:010}", epoc).to_owned();
+        let caboose_epoc = format!("{epoc}").to_owned();
 
         // If this Hubris archive used our TOML inheritance system, then the
         // name could be overridden in the `patches.toml` file.

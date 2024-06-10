@@ -131,10 +131,10 @@ impl CabooseBuilder {
     pub fn epoch<S: Into<String>>(mut self, epoch: S) -> Self {
         let epoch: String = epoch.into();
         match epoch.len() {
-            0 => self.epoch = Some("0000000000".to_string()),
+            0 => self.epoch = Some("0".to_string()),
             _ => {
                 if let Ok(epoch) = epoch.parse::<u32>() {
-                    self.epoch = Some(format!("{epoch:010}").to_owned());
+                    self.epoch = Some(format!("{epoch}").to_owned());
                 }
             }
         }
@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(caboose.board(), Ok("bar".as_bytes()));
         assert_eq!(caboose.name(), Ok("fizz".as_bytes()));
         assert_eq!(caboose.version(), Ok("buzz".as_bytes()));
-        assert_eq!(caboose.epoch(), Ok("0000000000".as_bytes()));
+        assert_eq!(caboose.epoch(), Ok("0".as_bytes()));
     }
 
     #[test]
@@ -239,13 +239,13 @@ mod tests {
     #[test]
     fn builder_will_normalize_empty_epoch() {
         let caboose = CabooseBuilder::default().epoch("").build();
-        assert_eq!(caboose.epoch(), Ok("0000000000".as_bytes()));
+        assert_eq!(caboose.epoch(), Ok("0".as_bytes()));
     }
 
     #[test]
     fn builder_will_normalize_short_epoch() {
         let caboose = CabooseBuilder::default().epoch("1234").build();
-        assert_eq!(caboose.epoch(), Ok("0000001234".as_bytes()));
+        assert_eq!(caboose.epoch(), Ok("1234".as_bytes()));
     }
 
     #[test]
