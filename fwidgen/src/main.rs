@@ -2,10 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use hubtools::RawHubrisArchive;
 use sha3::{Digest, Sha3_256};
-use std::{
-    str,
-    ops::Range,
-};
+use std::{ops::Range, str};
 
 pub const LPC55_FLASH_PAGE_SIZE: usize = 512;
 
@@ -39,15 +36,16 @@ impl TryFrom<&RawHubrisArchive> for Chip {
         let manifest = archive.extract_file("app.toml")?;
         let manifest: toml::Value = toml::from_str(
             str::from_utf8(&manifest).context("manifest bytes to UTF8")?,
-        ).context("manifest UTF8 to TOML")?;
+        )
+        .context("manifest UTF8 to TOML")?;
 
         let chip = manifest
-           .as_table()
-           .ok_or(anyhow!("manifest isn't a table"))?
-           .get("chip")
-           .ok_or(anyhow!("no key \"chip\" in manifest"))?
-           .as_str()
-           .ok_or(anyhow!("value for key \"chip\" isn't a string"))?;
+            .as_table()
+            .ok_or(anyhow!("manifest isn't a table"))?
+            .get("chip")
+            .ok_or(anyhow!("no key \"chip\" in manifest"))?
+            .as_str()
+            .ok_or(anyhow!("value for key \"chip\" isn't a string"))?;
 
         if chip.contains("lpc55") {
             Ok(Chip::Lpc55)
@@ -60,12 +58,17 @@ impl TryFrom<&RawHubrisArchive> for Chip {
 }
 
 // Return a Range describing the named flash range from memory.toml).
-fn get_flash_range(name: &str, archive: &RawHubrisArchive) -> Result<Range<u32>> {
-    let memory = archive.extract_file("memory.toml")
+fn get_flash_range(
+    name: &str,
+    archive: &RawHubrisArchive,
+) -> Result<Range<u32>> {
+    let memory = archive
+        .extract_file("memory.toml")
         .context("extract memory.toml from archive")?;
     let memory: toml::Value = toml::from_str(
         str::from_utf8(&memory).context("memory.toml bytes to UTF8")?,
-    ).context("memory.toml UTF8 to TOML")?;
+    )
+    .context("memory.toml UTF8 to TOML")?;
 
     // this may be easier w/ a derive macro for TOML -> Rust types / instances
     for value in memory
@@ -74,7 +77,9 @@ fn get_flash_range(name: &str, archive: &RawHubrisArchive) -> Result<Range<u32>>
         .get("flash")
         .ok_or(anyhow!("no value with key \"flash\" memory.toml table"))?
         .as_array()
-        .ok_or(anyhow!("value from key \"flash\" in memory.toml is not an array"))?
+        .ok_or(anyhow!(
+            "value from key \"flash\" in memory.toml is not an array"
+        ))?
     {
         let name_toml = value
             .get("name")
@@ -85,7 +90,9 @@ fn get_flash_range(name: &str, archive: &RawHubrisArchive) -> Result<Range<u32>>
         if name == name_toml {
             let start: u32 = value
                 .get("address")
-                .ok_or(anyhow!("no key \"address\" found in flash table \"a\""))?
+                .ok_or(anyhow!(
+                    "no key \"address\" found in flash table \"a\""
+                ))?
                 .as_integer()
                 .ok_or(anyhow!("value for key \"address\" isn't an integer"))?
                 .try_into()
@@ -112,7 +119,9 @@ fn main() -> Result<()> {
     let archive = RawHubrisArchive::load(&args.archive)
         .context("Load RawHubrisArchive")?;
 
-    let image = archive.image.to_binary()
+    let image = archive
+        .image
+        .to_binary()
         .context("Archive image to binary")?;
 
     let chip = Chip::try_from(&archive)?;
@@ -137,7 +146,7 @@ fn main() -> Result<()> {
             // image to the end of flash will be unwritten and thus
             // unreadable.
             LPC55_FLASH_PAGE_SIZE - image.len() % LPC55_FLASH_PAGE_SIZE
-        },
+        }
         Chip::Stm32 => {
             // On the stm32s flash pages that haven't had any data written to
             // them will return 0xff. This includes flash pages that have
