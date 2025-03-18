@@ -277,24 +277,8 @@ impl RawHubrisImage {
     }
 
     fn caboose_range(&self) -> Result<std::ops::Range<u32>, Error> {
-        let mut found_header = None;
+        let image_size = self.image_size()?;
         let start_addr = self.start_addr;
-
-        for header_offset in header::POSSIBLE_OFFSETS {
-            let mut header_magic = 0u32;
-            self.read(start_addr + header_offset, &mut header_magic)?;
-            if header::MAGIC.contains(&header_magic) {
-                found_header = Some(header_offset);
-                break;
-            }
-        }
-
-        let Some(header_offset) = found_header else {
-            return Err(Error::MissingMagic(header::MAGIC));
-        };
-
-        let mut image_size = 0u32;
-        self.read(start_addr + header_offset + 4, &mut image_size)?;
 
         let mut caboose_size = 0u32;
         self.read(start_addr + image_size - 4, &mut caboose_size)?;
@@ -326,7 +310,7 @@ impl RawHubrisImage {
         }
     }
 
-    /// Attempts to read `out.len()` bytes, starting at `start`
+    /// Read `out.len()` bytes, starting at `start`
     fn read<T: AsBytes + FromBytes + ?Sized>(
         &self,
         start: u32,
@@ -338,7 +322,7 @@ impl RawHubrisImage {
         Ok(())
     }
 
-    /// Attempts to read `out.len()` bytes, starting at `start`
+    /// Write `input.len()` bytes, starting at `start`
     fn write<T: AsBytes + FromBytes + ?Sized>(
         &mut self,
         start: u32,
@@ -348,6 +332,38 @@ impl RawHubrisImage {
         self.get_mut(start..start + size)?
             .copy_from_slice(input.as_bytes());
         Ok(())
+    }
+
+    // TODO: Knowlege about image formats needs to be
+    // consolidated into its own crate usable in std and no_std
+    // contexts.
+
+    fn locate_header(&self) -> Result<u32, Error> {
+        for header_offset in header::POSSIBLE_OFFSETS {
+            let mut header_magic = 0u32;
+            self.read(self.start_addr + header_offset, &mut header_magic)?;
+            if header::MAGIC.contains(&header_magic) {
+                return Ok(header_offset);
+            }
+        }
+        Err(Error::MissingMagic(header::MAGIC))
+    }
+
+    fn read_image_header(&self) -> Result<header::ImageHeader, Error> {
+        let header_offset = self.locate_header()?;
+        let mut header = header::ImageHeader::new_zeroed();
+        // TODO: We assume that the host that we're running on matches
+        // the little-endianness of the target device. That happens to
+        // be true in all known cases, but is not good practice and
+        // should be fixed.
+        self.read(self.start_addr + header_offset, &mut header)?;
+        Ok(header)
+    }
+
+    /// Return the image size up to but not including any signature block.
+    fn image_size(&self) -> Result<u32, Error> {
+        let header = self.read_image_header()?;
+        Ok(header.total_image_len)
     }
 }
 
@@ -471,6 +487,9 @@ pub enum Error {
 
     #[error("packing error: {0}")]
     PackingError(String),
+
+    #[error("invalid epoch value: {0}")]
+    InvalidEpoch(String),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -614,17 +633,25 @@ impl RawHubrisArchive {
         self.image.write_caboose(data)
     }
 
-    /// Writes the given version (and nothing else) to the caboose
+    /// Writes the given version (and optional epoch) to the caboose
     pub fn write_version_to_caboose(
         &mut self,
         version: &str,
+        epoch: Option<u32>,
     ) -> Result<(), Error> {
         // Manually build the TLV-C data for the caboose
-        let data = tlvc_text::Piece::Chunk(
+        let mut chunks = vec![tlvc_text::Piece::Chunk(
             tlvc_text::Tag::new(caboose::tags::VERS),
             vec![tlvc_text::Piece::String(version.to_owned())],
-        );
-        let out = tlvc_text::pack(&[data]);
+        )];
+        if let Some(epoc) = epoch {
+            let data = tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(caboose::tags::EPOC),
+                vec![tlvc_text::Piece::String(epoc.to_string().to_owned())],
+            );
+            chunks.push(data)
+        }
+        let out = tlvc_text::pack(&chunks);
         self.write_caboose(&out)?;
         Ok(())
     }
@@ -636,11 +663,13 @@ impl RawHubrisArchive {
     /// - `NAME`: image name
     /// - `BORD`: board name
     /// - `VERS`: the provided version string (if present)
+    /// - 'EPOC': epoch value for rollback protection during update
     ///
     /// Everything except `VERS` are extracted from the Hubris archive itself.
     fn generate_default_caboose(
         &mut self,
         version: Option<&String>,
+        epoch: Option<u32>,
     ) -> Result<Vec<tlvc_text::Piece>, Error> {
         let manifest = self.extract_file("app.toml")?;
         let git = self.extract_file("git-rev")?;
@@ -667,8 +696,10 @@ impl RawHubrisArchive {
             .ok_or(Error::BadTomlType)?
             .to_owned();
 
+        // Epoch defaults to zero
+
         // If this Hubris archive used our TOML inheritance system, then the
-        // name could be overridded in the `patches.toml` file.
+        // name could be overridden in the `patches.toml` file.
         if let Ok(patches) = self.extract_file("patches.toml") {
             let patches: toml::Value = toml::from_str(
                 std::str::from_utf8(&patches).map_err(Error::BadManifest)?,
@@ -697,6 +728,13 @@ impl RawHubrisArchive {
                 tlvc_text::Tag::new(caboose::tags::NAME),
                 vec![tlvc_text::Piece::String(name)],
             ),
+            tlvc_text::Piece::Chunk(
+                tlvc_text::Tag::new(caboose::tags::EPOC),
+                // EPOC defaults to "0"
+                vec![tlvc_text::Piece::String(
+                    epoch.unwrap_or(0u32).to_string(),
+                )],
+            ),
         ];
         if let Some(v) = version {
             let data = tlvc_text::Piece::Chunk(
@@ -711,8 +749,10 @@ impl RawHubrisArchive {
     pub fn write_default_caboose(
         &mut self,
         version: Option<&String>,
+        epoch: Option<u32>,
     ) -> Result<(), Error> {
-        let out = tlvc_text::pack(&self.generate_default_caboose(version)?);
+        let out =
+            tlvc_text::pack(&self.generate_default_caboose(version, epoch)?);
         self.write_caboose(&out)
     }
 
@@ -858,6 +898,7 @@ impl RawHubrisArchive {
         root_certs: Vec<Certificate>,
         signing_certs: Vec<Certificate>,
         version: Option<&String>,
+        epoch: Option<u32>,
     ) -> Result<Vec<u8>, Error> {
         match self.is_lpc55() {
             Ok(_) => {
@@ -893,7 +934,8 @@ impl RawHubrisArchive {
                     )?;
                 }
 
-                let mut caboose = self.generate_default_caboose(version)?;
+                let mut caboose =
+                    self.generate_default_caboose(version, epoch)?;
 
                 caboose.push(tlvc_text::Piece::Chunk(
                     tlvc_text::Tag::new(caboose::tags::SIGN),
@@ -912,7 +954,7 @@ impl RawHubrisArchive {
                 Ok(stamped)
             }
             Err(_) => {
-                self.write_default_caboose(version)?;
+                self.write_default_caboose(version, epoch)?;
                 // Not an LPC55 image, just return the image back for now
                 self.image.to_binary()
             }
@@ -978,11 +1020,26 @@ mod header {
     // new-style magic numbers, which use the same header layout.
     pub(crate) const MAGIC: [u32; 2] = [0x15356637, 0x64_CE_D6_CA];
 
-    #[derive(Default, AsBytes, FromBytes)]
+    #[derive(AsBytes, FromBytes)]
     #[repr(C)]
     pub(crate) struct ImageHeader {
         pub magic: u32,
         pub total_image_len: u32,
+        pub _pad: [u32; 16],
+        pub _version: u32,
+        pub _epoch: u32,
+    }
+
+    impl ImageHeader {
+        pub fn new(total_len: usize) -> Self {
+            ImageHeader {
+                magic: MAGIC[1],
+                total_image_len: total_len as u32,
+                _pad: [0; 16],
+                _version: 0,
+                _epoch: 0,
+            }
+        }
     }
 
     // The header is located in one of a few locations, depending on MCU
