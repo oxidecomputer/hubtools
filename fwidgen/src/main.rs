@@ -103,7 +103,7 @@ fn get_flash_range(name: &str, archive: &RawHubrisArchive) -> Result<Range<u32>>
         }
     }
 
-    return Err(anyhow!("No flash range for image \"{}\"", name));
+    Err(anyhow!("No flash range for image \"{}\"", name))
 }
 
 fn main() -> Result<()> {
