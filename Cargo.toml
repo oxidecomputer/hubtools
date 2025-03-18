@@ -1,6 +1,7 @@
 [workspace]
 members = ["fwidgen", "hubedit", "hubtools"]
 resolver = "2"
+license = "MPL-2.0"
 
 [workspace.dependencies]
 hubtools.path = "hubtools"
