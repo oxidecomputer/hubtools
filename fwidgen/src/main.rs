@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, ValueEnum};
-use hubtools::RawHubrisArchive;
+use hubtools::{Chip, RawHubrisArchive};
 use sha2::{digest::DynDigest, Digest as _, Sha256};
 use sha3::Sha3_256;
 use std::{fmt, ops::Range, str};
@@ -59,40 +59,6 @@ impl Digest {
         match self {
             Digest::Sha256 => Box::new(Sha256::new()),
             Digest::Sha3_256 => Box::new(Sha3_256::new()),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Chip {
-    Lpc55,
-    Stm32,
-}
-
-impl TryFrom<&RawHubrisArchive> for Chip {
-    type Error = anyhow::Error;
-
-    fn try_from(archive: &RawHubrisArchive) -> Result<Self> {
-        let manifest = archive.extract_file("app.toml")?;
-        let manifest: toml::Value = toml::from_str(
-            str::from_utf8(&manifest).context("manifest bytes to UTF8")?,
-        )
-        .context("manifest UTF8 to TOML")?;
-
-        let chip = manifest
-            .as_table()
-            .ok_or(anyhow!("manifest isn't a table"))?
-            .get("chip")
-            .ok_or(anyhow!("no key \"chip\" in manifest"))?
-            .as_str()
-            .ok_or(anyhow!("value for key \"chip\" isn't a string"))?;
-
-        if chip.contains("lpc55") {
-            Ok(Chip::Lpc55)
-        } else if chip.contains("stm32") {
-            Ok(Chip::Stm32)
-        } else {
-            Err(anyhow!("Unsupported chip: {}", chip))
         }
     }
 }
