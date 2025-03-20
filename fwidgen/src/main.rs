@@ -7,7 +7,7 @@ use clap::{Parser, ValueEnum};
 use hubtools::RawHubrisArchive;
 use sha2::{digest::DynDigest, Digest as _, Sha256};
 use sha3::Sha3_256;
-use std::{ops::Range, str};
+use std::{fmt, ops::Range, str};
 
 pub const LPC55_FLASH_PAGE_SIZE: usize = 512;
 
@@ -41,6 +41,17 @@ enum Digest {
     #[clap(name = "sha3-256")]
     #[default]
     Sha3_256,
+}
+
+// Display string names for digest algorithms from IANA named information
+// hash algorithm registry
+impl fmt::Display for Digest {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Sha256 => write!(f, "sha-256"),
+            Self::Sha3_256 => write!(f, "sha3-256"),
+        }
+    }
 }
 
 impl Digest {
@@ -203,7 +214,10 @@ fn main() -> Result<()> {
 
     let digest = digest.finalize();
 
-    println!("{}", hex::encode(digest));
+    // Display FWID as the string name for the digest from IANA registry and
+    // the output from the selected digest encoded as hex & separated by a
+    // `;`.
+    println!("{};{}", args.digest, hex::encode(digest));
 
     Ok(())
 }
