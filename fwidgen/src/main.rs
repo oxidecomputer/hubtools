@@ -202,8 +202,12 @@ fn main() -> Result<()> {
     digest.update(vec![0xff; pad].as_ref());
 
     let digest = digest.finalize();
+    let name = args
+        .digest
+        .to_possible_value()
+        .ok_or(anyhow!("Invalid digest"))?;
 
-    println!("{}", hex::encode(digest));
+    println!("{};{}", name.get_name(), hex::encode(digest));
 
     Ok(())
 }
