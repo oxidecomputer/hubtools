@@ -113,18 +113,13 @@ fn get_flash_range(
     Err(anyhow!("No flash range for image \"{}\"", name))
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-
-    let archive = RawHubrisArchive::load(&args.archive)
-        .context("Load RawHubrisArchive")?;
-
+pub fn get_fwid(archive: &RawHubrisArchive) -> Result<String> {
     let image = archive
         .image
         .to_binary()
         .context("Archive image to binary")?;
 
-    let chip = Chip::try_from(&archive)?;
+    let chip = Chip::try_from(archive)?;
 
     // When calculating the FWID value we aim to capture *all* data from the
     // relevant flash region. The hubris image will reside in one contiguous
@@ -174,7 +169,6 @@ fn main() -> Result<()> {
 
     let digest = digest.finalize();
 
-    println!("{}", hex::encode(digest));
-
-    Ok(())
+    Ok(hex::encode(digest))
 }
+
