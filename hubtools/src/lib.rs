@@ -21,7 +21,7 @@ pub use archive_builder::HubrisArchiveBuilder;
 pub use bootleby::bootleby_to_archive;
 pub use caboose::{Caboose, CabooseBuilder, CabooseError};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RawHubrisImage {
     pub start_addr: u32,
     pub data: Vec<u8>,
@@ -483,7 +483,7 @@ pub enum ArchiveSource {
 
 /// Minimal Hubris archive, useful for some basic manipulation of the binary
 /// image within.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RawHubrisArchive {
     /// Source of the Hubris archive
     pub source: ArchiveSource,
