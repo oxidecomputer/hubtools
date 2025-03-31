@@ -830,24 +830,12 @@ impl RawHubrisArchive {
     }
 
     fn is_lpc55(&self) -> Result<(), Error> {
-        let manifest = self.extract_file("app.toml")?;
-        let manifest: toml::Value = toml::from_str(
-            std::str::from_utf8(&manifest).map_err(Error::BadManifest)?,
-        )
-        .map_err(Error::BadToml)?;
-        let chip = manifest
-            .as_table()
-            .ok_or(Error::BadTomlType)?
-            .get("chip")
-            .ok_or(Error::BadTomlType)?
-            .as_str()
-            .ok_or(Error::BadTomlType)?
-            .to_owned();
+        let chip = Chip::try_from(self)?;
 
-        if !chip.contains("lpc55") {
-            Err(Error::WrongChip(chip))
-        } else {
+        if chip == Chip::Lpc55 {
             Ok(())
+        } else {
+            Err(Error::WrongChip(chip.to_string()))
         }
     }
 
@@ -968,6 +956,50 @@ impl RawHubrisArchive {
         lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)
             .map_err(Error::Lpc55)?;
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Chip {
+    Lpc55,
+    Stm32,
+}
+
+impl TryFrom<&RawHubrisArchive> for Chip {
+    type Error = Error;
+
+    fn try_from(archive: &RawHubrisArchive) -> Result<Self, Error> {
+        let manifest = archive.extract_file("app.toml")?;
+        let manifest: toml::Value = toml::from_str(
+            std::str::from_utf8(&manifest)
+                .map_err(Error::BadCommentEncoding)?,
+        )
+        .map_err(Error::BadToml)?;
+
+        let chip = manifest
+            .as_table()
+            .ok_or(Error::BadTomlType)?
+            .get("chip")
+            .ok_or(Error::BadTomlType)?
+            .as_str()
+            .ok_or(Error::BadTomlType)?;
+
+        if chip.contains("lpc55") {
+            Ok(Chip::Lpc55)
+        } else if chip.contains("stm32") {
+            Ok(Chip::Stm32)
+        } else {
+            Err(Error::WrongChip(chip.to_string()))
+        }
+    }
+}
+
+impl std::fmt::Display for Chip {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Chip::Lpc55 => write!(f, "lpc55"),
+            Chip::Stm32 => write!(f, "stm32"),
+        }
     }
 }
 

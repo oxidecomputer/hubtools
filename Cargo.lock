@@ -363,6 +363,7 @@ dependencies = [
  "clap",
  "hex",
  "hubtools",
+ "sha2",
  "sha3",
  "toml",
 ]

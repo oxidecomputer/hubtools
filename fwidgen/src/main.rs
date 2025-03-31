@@ -3,10 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use anyhow::{anyhow, Context, Result};
-use clap::Parser;
-use hubtools::RawHubrisArchive;
-use sha3::{Digest, Sha3_256};
-use std::{ops::Range, str};
+use clap::{Parser, ValueEnum};
+use hubtools::{Chip, RawHubrisArchive};
+use sha2::{digest::DynDigest, Digest as _, Sha256};
+use sha3::Sha3_256;
+use std::{fmt, ops::Range, str};
 
 pub const LPC55_FLASH_PAGE_SIZE: usize = 512;
 
@@ -22,41 +23,42 @@ pub const LPC55_FLASH_PAGE_SIZE: usize = 512;
 /// of hubris archives
 #[derive(Parser, Debug)]
 struct Args {
+    /// Hash algorithm used to generate FWID
+    #[clap(default_value_t, env = "HUBEDIT_DIGEST", long, value_enum)]
+    digest: Digest,
+
     /// Hubris archive
     #[clap(env = "HUBEDIT_ARCHIVE")]
     archive: String,
 }
 
-#[derive(Debug)]
-enum Chip {
-    Lpc55,
-    Stm32,
+// We provide names explicitly for each variant to map each to the IANA named
+// information hash algorithm registry hash name strings.
+#[derive(Clone, Debug, Default, ValueEnum)]
+enum Digest {
+    #[clap(name = "sha-256")]
+    Sha256,
+    #[clap(name = "sha3-256")]
+    #[default]
+    Sha3_256,
 }
 
-impl TryFrom<&RawHubrisArchive> for Chip {
-    type Error = anyhow::Error;
+// Display string names for digest algorithms from IANA named information
+// hash algorithm registry
+impl fmt::Display for Digest {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Sha256 => write!(f, "sha-256"),
+            Self::Sha3_256 => write!(f, "sha3-256"),
+        }
+    }
+}
 
-    fn try_from(archive: &RawHubrisArchive) -> Result<Self> {
-        let manifest = archive.extract_file("app.toml")?;
-        let manifest: toml::Value = toml::from_str(
-            str::from_utf8(&manifest).context("manifest bytes to UTF8")?,
-        )
-        .context("manifest UTF8 to TOML")?;
-
-        let chip = manifest
-            .as_table()
-            .ok_or(anyhow!("manifest isn't a table"))?
-            .get("chip")
-            .ok_or(anyhow!("no key \"chip\" in manifest"))?
-            .as_str()
-            .ok_or(anyhow!("value for key \"chip\" isn't a string"))?;
-
-        if chip.contains("lpc55") {
-            Ok(Chip::Lpc55)
-        } else if chip.contains("stm32") {
-            Ok(Chip::Stm32)
-        } else {
-            Err(anyhow!("Unsupported chip: {}", chip))
+impl Digest {
+    fn to_dyn_digest(&self) -> Box<dyn DynDigest> {
+        match self {
+            Digest::Sha256 => Box::new(Sha256::new()),
+            Digest::Sha3_256 => Box::new(Sha3_256::new()),
         }
     }
 }
@@ -172,13 +174,16 @@ fn main() -> Result<()> {
         }
     };
 
-    let mut digest = Sha3_256::new();
+    let mut digest = args.digest.to_dyn_digest();
     digest.update(&image);
-    digest.update(vec![0xff; pad]);
+    digest.update(vec![0xff; pad].as_ref());
 
     let digest = digest.finalize();
 
-    println!("{}", hex::encode(digest));
+    // Display FWID as the string name for the digest from IANA registry and
+    // the output from the selected digest encoded as hex & separated by a
+    // `;`.
+    println!("{};{}", args.digest, hex::encode(digest));
 
     Ok(())
 }
