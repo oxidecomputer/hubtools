@@ -1,6 +1,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use digest::{Digest, FixedOutput};
 use object::{Object, ObjectSection, ObjectSegment};
 use path_slash::PathBufExt;
 use thiserror::Error;
@@ -10,6 +12,7 @@ use zerocopy::{AsBytes, FromBytes};
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     io::{Cursor, Read, Write},
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -471,6 +474,18 @@ pub enum Error {
 
     #[error("packing error: {0}")]
     PackingError(String),
+
+    #[error("Unsupported chip type: {0}")]
+    UnsupportedChip(String),
+
+    #[error("No memory range with name: {0}")]
+    NoMemoryRange(String),
+
+    #[error("memory.toml decoding error: {0}")]
+    BadMemory(std::str::Utf8Error),
+
+    #[error("Failed to convert TOML int to u32: {0}")]
+    BadInt(std::num::TryFromIntError),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -956,6 +971,111 @@ impl RawHubrisArchive {
         lpc55_sign::verify::verify_image(&self.image.data, cmpa, cfpa)
             .map_err(Error::Lpc55)?;
         Ok(())
+    }
+    // Return a Range describing the named flash range from memory.toml).
+    pub fn get_flash_range(&self, name: &str) -> Result<Range<u32>, Error> {
+        let memory = self.extract_file("memory.toml")?;
+        let memory: toml::Value = toml::from_str(
+            std::str::from_utf8(&memory).map_err(Error::BadMemory)?,
+        )
+        .map_err(Error::BadToml)?;
+
+        // this may be easier w/ a derive macro for TOML -> Rust types / instances
+        for value in memory
+            .as_table()
+            .ok_or(Error::BadTomlType)?
+            .get("flash")
+            .ok_or(Error::BadTomlType)?
+            .as_array()
+            .ok_or(Error::BadTomlType)?
+        {
+            let name_toml = value
+                .get("name")
+                .ok_or(Error::BadTomlType)?
+                .as_str()
+                .ok_or(Error::BadTomlType)?;
+
+            if name == name_toml {
+                let start: u32 = value
+                    .get("address")
+                    .ok_or(Error::BadTomlType)?
+                    .as_integer()
+                    .ok_or(Error::BadTomlType)?
+                    .try_into()
+                    .map_err(Error::BadInt)?;
+                let size: u32 = value
+                    .get("size")
+                    .ok_or(Error::BadTomlType)?
+                    .as_integer()
+                    .ok_or(Error::BadTomlType)?
+                    .try_into()
+                    .map_err(Error::BadInt)?;
+                let end = start + size;
+
+                return Ok(Range { start, end });
+            }
+        }
+
+        Err(Error::NoMemoryRange(name.to_string()))
+    }
+}
+
+pub const LPC55_FLASH_PAGE_SIZE: usize = 512;
+
+pub trait FwidGen<D: Default + Digest + FixedOutput> {
+    fn fwid(&self) -> Result<Vec<u8>, Error>;
+}
+
+impl<D: Default + Digest + FixedOutput> FwidGen<D> for RawHubrisArchive {
+    fn fwid(&self) -> Result<Vec<u8>, Error> {
+        let image = self.image.to_binary()?;
+        // When calculating the FWID value we aim to capture *all* data from the
+        // relevant flash region. The hubris image will reside in one contiguous
+        // range identical to the image from the archive however all flash pages
+        // within the remaining flash region must be represented in the FWID as
+        // well. We do this to ensure flash pages not used by the hubris image
+        // are in the expected state. Doing this here requires that we accomodate
+        // some chip-specific quirks here:
+        let pad = match Chip::try_from(self)? {
+            Chip::Lpc55 => {
+                // On the Lpc55s flash pages that haven't had any data written to
+                // them cannot be read. Unused regions of a flash page will
+                // return 0xff when read. Claculating the FWID then requires that
+                // we pad the final page in the hubris image with `0xff`.
+                //
+                // NOTE: We do *not* need any info about the flash region where
+                // this image will be written on the Lpc55s. The behavior of the
+                // flash on this chip means all pages from the end of the hubris
+                // image to the end of flash will be unwritten and thus
+                // unreadable.
+                LPC55_FLASH_PAGE_SIZE - image.len() % LPC55_FLASH_PAGE_SIZE
+            }
+            Chip::Stm32 => {
+                // On the stm32s flash pages that haven't had any data written to
+                // them will return 0xff. This includes flash pages that have
+                // been partially written. Calculating the FWID then requires
+                // that we pad the hubris image w/ `0xff` out to the end of its
+                // flash region. This requires we pull additional data from the
+                // hubris archive to get the dimensions of the flash range where
+                // the image will reside.
+                //
+                // NOTE: The hubris image that we run on stm32s is the SP and
+                // it is only ever written to a single flash range. We still
+                // look up the image name and get the flash range from the image
+                // manifest in an attempt to be flexible in the event this
+                // assumption becomes invalid.
+                let name = self.image_name()?;
+                let flash = self.get_flash_range(&name)?;
+
+                flash.end as usize - flash.start as usize - image.len()
+            }
+        };
+
+        let mut digest = D::default();
+        Digest::update(&mut digest, &image);
+        Digest::update(&mut digest, vec![0xff; pad]);
+
+        Ok(digest.finalize().to_vec())
     }
 }
 

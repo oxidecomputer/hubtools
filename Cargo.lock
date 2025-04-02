@@ -443,6 +443,7 @@ dependencies = [
 name = "hubtools"
 version = "0.4.6"
 dependencies = [
+ "digest",
  "hex",
  "lpc55_areas",
  "lpc55_sign",
