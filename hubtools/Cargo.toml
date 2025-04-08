@@ -19,4 +19,4 @@ tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false
 tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, version = "0.3" }
 lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.3" }
 lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
-rsa = { version = "0.9.0", default-features = false, features = ["std", "pem", "sha2"] }
+rsa = { version = "0.9.8", default-features = false, features = ["std", "pem", "sha2"] }
