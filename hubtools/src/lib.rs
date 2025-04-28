@@ -329,6 +329,15 @@ impl RawHubrisImage {
         }
     }
 
+    /// Reads the caboose from local memory
+    pub fn read_caboose(&self) -> Result<Caboose, Error> {
+        // Skip the start and end word, which are markers
+        let caboose_range = self.caboose_range()?;
+        let mut out = vec![0u8; caboose_range.len()];
+        self.read(caboose_range.start, out.as_mut_slice())?;
+        Ok(Caboose::new(out))
+    }
+
     /// Attempts to read `out.len()` bytes, starting at `start`
     fn read<T: AsBytes + FromBytes + ?Sized>(
         &self,
@@ -585,11 +594,7 @@ impl RawHubrisArchive {
 
     /// Reads the caboose from local memory
     pub fn read_caboose(&self) -> Result<Caboose, Error> {
-        // Skip the start and end word, which are markers
-        let caboose_range = self.image.caboose_range()?;
-        let mut out = vec![0u8; caboose_range.len()];
-        self.image.read(caboose_range.start, out.as_mut_slice())?;
-        Ok(Caboose::new(out))
+        self.image.read_caboose()
     }
 
     /// Extract the name of the image from the ZIP archive
