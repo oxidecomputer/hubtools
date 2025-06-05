@@ -1150,3 +1150,504 @@ mod header {
     // - 0x130 is for the LPC55
     pub(crate) const POSSIBLE_OFFSETS: [u32; 4] = [0xbc, 0xc0, 0x130, 0x298];
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::io::Write;
+    use x509_cert::der::Decode;
+    use zerocopy::FromBytes;
+    use zip::{write::FileOptions, ZipWriter};
+
+    const MOCK_START_ADDR: u32 = 0x1000;
+    const MOCK_KENTRY: u32 = 0x10F0;
+    const MOCK_HEADER_OFFSET: u32 = header::POSSIBLE_OFFSETS[0];
+    const MOCK_CABOOSE_TOTAL_SIZE: u32 = 256;
+    const MOCK_CABOOSE_DATA_AREA_SIZE: u32 = MOCK_CABOOSE_TOTAL_SIZE - 8;
+
+    fn create_mock_image_data(initial_caboose_tlvc: Option<&[u8]>) -> Vec<u8> {
+        let mut data = vec![0xFFu8; 2048];
+
+        let kentry_offset = MOCK_KENTRY
+            .checked_sub(MOCK_START_ADDR)
+            .expect("Kentry must be >= start_addr");
+        assert!(
+            (kentry_offset as usize) < data.len(),
+            "Kentry out of bounds for mock image data"
+        );
+
+        let header_abs_addr = MOCK_START_ADDR + MOCK_HEADER_OFFSET;
+        let header_rel_addr = (header_abs_addr - MOCK_START_ADDR) as usize;
+
+        assert!(
+            header_rel_addr + std::mem::size_of::<header::ImageHeader>()
+                <= data.len(),
+            "Header out of bounds"
+        );
+
+        let img_header = header::ImageHeader {
+            magic: header::MAGIC[0],
+            total_image_len: data.len() as u32,
+        };
+        data[header_rel_addr
+            ..header_rel_addr + std::mem::size_of::<header::ImageHeader>()]
+            .copy_from_slice(img_header.as_bytes());
+
+        let caboose_magic_word_offset =
+            data.len() - MOCK_CABOOSE_TOTAL_SIZE as usize;
+        let caboose_data_start_offset = caboose_magic_word_offset + 4;
+        let caboose_size_word_offset = data.len() - 4;
+
+        data[caboose_magic_word_offset..caboose_magic_word_offset + 4]
+            .copy_from_slice(&CABOOSE_MAGIC.to_le_bytes());
+        data[caboose_size_word_offset..caboose_size_word_offset + 4]
+            .copy_from_slice(&MOCK_CABOOSE_TOTAL_SIZE.to_le_bytes());
+
+        if let Some(content) = initial_caboose_tlvc {
+            assert!(content.len() <= MOCK_CABOOSE_DATA_AREA_SIZE as usize,
+              "Caboose content length={} larger than mock image data area ({})",
+              content.len(), MOCK_CABOOSE_DATA_AREA_SIZE);
+            data[caboose_data_start_offset
+                ..caboose_data_start_offset + content.len()]
+                .copy_from_slice(content);
+        }
+        data
+    }
+
+    fn create_mock_raw_hubris_image(
+        initial_caboose_tlvc: Option<&[u8]>,
+    ) -> RawHubrisImage {
+        RawHubrisImage {
+            start_addr: MOCK_START_ADDR,
+            data: create_mock_image_data(initial_caboose_tlvc),
+            kentry: MOCK_KENTRY,
+        }
+    }
+
+    fn dummy_certs() -> Vec<Certificate> {
+        let der_bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/fake_certificate.der"
+        ));
+        vec![Certificate::from_der(der_bytes)
+            .expect("Failed to parse dummy DER certificate from file")]
+    }
+
+    fn minimal_valid_packed_tlvc_for_init() -> Vec<u8> {
+        tlvc_text::pack(&[tlvc_text::Piece::Chunk(
+            tlvc_text::Tag::new(*b"INIT"),
+            vec![tlvc_text::Piece::Bytes(vec![0x00, 0x01, 0x02, 0x03])],
+        )])
+    }
+
+    fn create_mock_archive(
+        chip_name_str: &str,
+        initial_image_caboose_tlvc: Option<&[u8]>,
+        mfg_cfg_content: Option<&str>,
+        app_toml_name_override: Option<&str>,
+        patches_toml_name: Option<&str>,
+    ) -> Result<RawHubrisArchive, Error> {
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip = ZipWriter::new(Cursor::new(&mut zip_buf));
+            let options = FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            let raw_image =
+                create_mock_raw_hubris_image(initial_image_caboose_tlvc);
+            let elf_data =
+                raw_image.to_elf().expect("Failed to create mock ELF");
+            zip.start_file("img/final.elf", options).unwrap();
+            zip.write_all(&elf_data).unwrap();
+
+            let final_app_name =
+                app_toml_name_override.unwrap_or("default_app_name");
+            let app_toml_content = format!(
+                "chip = \"{}\"\nboard = \"test_board\"\nname = \"{}\"",
+                chip_name_str, final_app_name
+            );
+            zip.start_file("app.toml", options).unwrap();
+            zip.write_all(app_toml_content.as_bytes()).unwrap();
+
+            if let Some(pname) = patches_toml_name {
+                let patches_toml_content = format!("name = \"{}\"", pname);
+                zip.start_file("patches.toml", options).unwrap();
+                zip.write_all(patches_toml_content.as_bytes()).unwrap();
+            }
+
+            zip.start_file("git-rev", options).unwrap();
+            zip.write_all(b"mock_git_rev_123").unwrap();
+
+            zip.start_file("image-name", options).unwrap();
+            zip.write_all(b"test_image_name").unwrap();
+
+            if chip_name_str.contains("stm32") {
+                let memory_toml_content = format!(
+                    "[[flash]]\nname=\"{}\"\naddress=0x08000000\nsize=0x20000\n",
+                    final_app_name
+                );
+                zip.start_file("memory.toml", options).unwrap();
+                zip.write_all(memory_toml_content.as_bytes()).unwrap();
+            }
+
+            if let Some(mfg_content) = mfg_cfg_content {
+                zip.start_file("build_cfg/mfg_cfg.toml", options).unwrap();
+                zip.write_all(mfg_content.as_bytes()).unwrap();
+            }
+
+            zip.set_comment("hubris build archive v1");
+            zip.finish().unwrap();
+        }
+        RawHubrisArchive::from_vec(zip_buf)
+    }
+
+    /// Parses caboose items from a RawHubrisImage.
+    /// Assumes CabooseIter gracefully handles end-of-data/start-of-padding by
+    /// returning None.
+    fn get_caboose_items_from_image(
+        image: &RawHubrisImage,
+    ) -> Result<BTreeMap<[u8; 4], String>, String> {
+        let caboose_object = image
+            .read_caboose()
+            .map_err(|e| format!("Image::read_caboose failed: {:?}", e))?;
+        let mut items = BTreeMap::new();
+
+        let caboose_iterator = caboose_object
+            .iter()
+            .map_err(|e| format!("Caboose::iter() setup failed: {:?}", e))?;
+
+        for entry_result in caboose_iterator {
+            match entry_result {
+                Ok((tag_array, value_bytes)) => {
+                    let value_str = String::from_utf8(value_bytes.to_vec())
+                        .unwrap_or_else(|_| hex::encode(value_bytes));
+                    items.insert(tag_array, value_str);
+                }
+                Err(e) => {
+                    // Any error yielded by the CabooseIter is a problem.
+                    return Err(format!(
+                        "Error iterating caboose entry: {:?}",
+                        e
+                    ));
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    #[test]
+    fn test_caboose_iterator_step_by_step() {
+        let caboose = CabooseBuilder::default()
+            .name("TestApp")
+            .version("1.0.0")
+            .git_commit("abcdef")
+            .board("TestBoard")
+            .build();
+
+        let mut caboose_iterator = caboose.iter().expect(
+            "Caboose::iter() should succeed for a builder-created caboose",
+        );
+
+        match caboose_iterator.next() {
+            Some(Ok((tag, value))) => {
+                assert_eq!(tag, caboose::tags::GITC, "Expected GITC tag");
+                assert_eq!(value, b"abcdef", "GITC value mismatch");
+            }
+            other => panic!("Expected Some(Ok(GITC entry)), got {:?}", other),
+        }
+        match caboose_iterator.next() {
+            Some(Ok((tag, value))) => {
+                assert_eq!(tag, caboose::tags::BORD, "Expected BORD tag");
+                assert_eq!(value, b"TestBoard", "BORD value mismatch");
+            }
+            other => panic!("Expected Some(Ok(BORD entry)), got {:?}", other),
+        }
+        match caboose_iterator.next() {
+            Some(Ok((tag, value))) => {
+                assert_eq!(tag, caboose::tags::NAME, "Expected NAME tag");
+                assert_eq!(value, b"TestApp", "NAME value mismatch");
+            }
+            other => panic!("Expected Some(Ok(NAME entry)), got {:?}", other),
+        }
+        match caboose_iterator.next() {
+            Some(Ok((tag, value))) => {
+                assert_eq!(tag, caboose::tags::VERS, "Expected VERS tag");
+                assert_eq!(value, b"1.0.0", "VERS value mismatch");
+            }
+            other => panic!("Expected Some(Ok(VERS entry)), got {:?}", other),
+        }
+        assert!(
+            caboose_iterator.next().is_none(),
+            "Expected end of iterator (None) after last valid entry"
+        );
+        assert!(
+            caboose_iterator.next().is_none(),
+            "Expected end of iterator (None) on subsequent call after end"
+        );
+    }
+
+    #[test]
+    fn test_default_caboose_integrity_non_lpc55() {
+        let init_caboose = minimal_valid_packed_tlvc_for_init();
+        let mut archive = create_mock_archive(
+            "stm32h7",
+            Some(&init_caboose),
+            None,
+            Some("testapp"),
+            None,
+        )
+        .unwrap();
+
+        let version_string = "1.2.3-test".to_string();
+        let version: Option<&String> = Some(&version_string);
+
+        let pieces = archive
+            .generate_default_caboose(version)
+            .expect("generate_default_caboose should succeed");
+
+        let packed_bytes = tlvc_text::pack(&pieces);
+        assert!(
+            !packed_bytes.is_empty(),
+            "Packed default caboose should not be empty"
+        );
+
+        if packed_bytes.len() >= std::mem::size_of::<tlvc::ChunkHeader>() {
+            let header_data =
+                &packed_bytes[0..std::mem::size_of::<tlvc::ChunkHeader>()];
+            let parsed_header = tlvc::ChunkHeader::read_from(header_data)
+                .expect(
+                "Should be able to read ChunkHeader from packed_bytes prefix",
+            );
+
+            assert_eq!(
+                parsed_header.header_checksum.get(),
+                parsed_header.compute_checksum(),
+                "Header checksum mismatch for the first chunk from default \
+                caboose. Stored: {:#010x}, Computed: {:#010x}",
+                parsed_header.header_checksum.get(),
+                parsed_header.compute_checksum()
+            );
+        } else {
+            panic!(
+                "Packed default caboose is too short to contain a ChunkHeader."
+            );
+        }
+
+        let test_caboose_obj = Caboose::new(packed_bytes.clone());
+        let iterator = test_caboose_obj.iter().expect(
+            "Caboose::iter() setup should succeed if header checksums are correct");
+
+        let mut items_found = 0;
+        //while let Some(item_res) = iterator.next() {
+        //    item_res.unwrap_or_else(|e| {
+        //        panic!("Item in default caboose should be Ok. Error: {:?}", e)
+        //    });
+        //    items_found += 1;
+        //}
+        for item_res in iterator {
+            item_res.unwrap_or_else(|e| {
+                panic!("Item in default caboose should be Ok. Error: {:?}", e)
+            });
+            items_found += 1;
+        }
+        let expected_item_count = 3 + if version.is_some() { 1 } else { 0 };
+        assert_eq!(
+            items_found, expected_item_count,
+            "Unexpected number of items parsed from default non-LPC55 caboose"
+        );
+    }
+
+    #[test]
+    fn restamp_non_lpc55_chip() {
+        let init_caboose = minimal_valid_packed_tlvc_for_init();
+        let mut archive = create_mock_archive(
+            "stm32g070",
+            Some(&init_caboose),
+            None,
+            Some("stm_app"),
+            None,
+        )
+        .unwrap();
+        let version_str = "1.0.0-stm".to_string();
+
+        let image_data_before_restamp = archive.image.data.clone();
+        let stamped_binary = archive
+            .restamp(dummy_certs(), dummy_certs(), Some(&version_str))
+            .unwrap();
+
+        assert_eq!(
+            stamped_binary, archive.image.data,
+            "Stamped binary should be the current state of archive.image.data"
+        );
+        if !image_data_before_restamp.is_empty() && !stamped_binary.is_empty() {
+            assert_ne!(archive.image.data, image_data_before_restamp,
+                "archive.image.data should have been modified by restamp writing a caboose");
+        }
+
+        let caboose_items =
+            get_caboose_items_from_image(&archive.image).unwrap();
+
+        assert_eq!(caboose_items.get(&caboose::tags::NAME).unwrap(), "stm_app");
+        assert_eq!(
+            caboose_items.get(&caboose::tags::BORD).unwrap(),
+            "test_board"
+        );
+        assert_eq!(
+            *caboose_items.get(&caboose::tags::GITC).unwrap(),
+            "mock_git_rev_123"
+        );
+        assert_eq!(
+            caboose_items.get(&caboose::tags::VERS).unwrap(),
+            "1.0.0-stm"
+        );
+        assert!(
+            !caboose_items.contains_key(&caboose::tags::SIGN),
+            "SIGN tag should not be present for non-LPC55"
+        );
+    }
+
+    #[test]
+    fn restamp_lpc55_chip_no_mfg_cfg() {
+        let init_caboose = minimal_valid_packed_tlvc_for_init();
+        let mut archive = create_mock_archive(
+            "lpc55s69",
+            Some(&init_caboose),
+            None,
+            Some("lpc_app"),
+            None,
+        )
+        .unwrap();
+        let version_str = "2.0.0-lpc".to_string();
+        let certs = dummy_certs();
+
+        let stamped_binary = archive
+            .restamp(certs.clone(), certs, Some(&version_str))
+            .unwrap();
+
+        assert_ne!(
+            stamped_binary, archive.image.data,
+            "Stamped binary should be modified for LPC55"
+        );
+
+        let caboose_items =
+            get_caboose_items_from_image(&archive.image).unwrap();
+        assert_eq!(caboose_items.get(&caboose::tags::NAME).unwrap(), "lpc_app");
+        assert_eq!(
+            caboose_items.get(&caboose::tags::VERS).unwrap(),
+            "2.0.0-lpc"
+        );
+        assert!(
+            caboose_items.contains_key(&caboose::tags::SIGN),
+            "SIGN tag (RKTH) must be present for LPC55"
+        );
+
+        assert!(!archive.new_files.contains_key("cmpa.bin"));
+        assert!(!archive.new_files.contains_key("cfpa.bin"));
+    }
+
+    #[test]
+    fn restamp_lpc55_chip_with_mfg_cfg() {
+        let init_caboose = minimal_valid_packed_tlvc_for_init();
+        // Using the structure from the user-provided stage0-bart/build_cfg/mfg_cfg.toml
+        let mfg_toml_content = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/stage0-bart-build_cfg-mfg_cfg.toml"
+        ));
+        let mut archive = create_mock_archive(
+            "lpc55s128",
+            Some(&init_caboose),
+            Some(mfg_toml_content),
+            Some("lpc_mfg_app"),
+            None,
+        )
+        .unwrap();
+        let version_str = "2.1.0-lpc-mfg".to_string();
+        let certs = dummy_certs();
+
+        let _stamped_binary = archive
+            .restamp(certs.clone(), certs, Some(&version_str))
+            .unwrap();
+
+        let caboose_items =
+            get_caboose_items_from_image(&archive.image).unwrap();
+        assert_eq!(
+            caboose_items.get(&caboose::tags::NAME).unwrap(),
+            "lpc_mfg_app"
+        );
+        assert_eq!(
+            caboose_items.get(&caboose::tags::VERS).unwrap(),
+            "2.1.0-lpc-mfg"
+        );
+        assert!(caboose_items.contains_key(&caboose::tags::SIGN));
+
+        assert!(
+            archive.new_files.contains_key("cmpa.bin"),
+            "cmpa.bin not found in new_files"
+        );
+        assert!(
+            archive.new_files.contains_key("cfpa.bin"),
+            "cfpa.bin not found in new_files"
+        );
+        assert!(!archive.new_files.get("cmpa.bin").unwrap().is_empty());
+        assert!(!archive.new_files.get("cfpa.bin").unwrap().is_empty());
+    }
+
+    #[test]
+    fn restamp_lpc55_name_override_in_patches_toml() {
+        let init_caboose = minimal_valid_packed_tlvc_for_init();
+        let mut archive = create_mock_archive(
+            "lpc55s69",
+            Some(&init_caboose),
+            None,
+            Some("base_app_name"),
+            Some("patched_app_name"),
+        )
+        .unwrap();
+        let certs = dummy_certs();
+
+        archive.restamp(certs.clone(), certs, None).unwrap();
+
+        let caboose_items =
+            get_caboose_items_from_image(&archive.image).unwrap();
+        assert_eq!(
+            caboose_items.get(&caboose::tags::NAME).unwrap(),
+            "patched_app_name"
+        );
+    }
+
+    #[test]
+    fn restamp_lpc55_error_on_empty_root_certs() {
+        let init_caboose = minimal_valid_packed_tlvc_for_init();
+        let mut archive = create_mock_archive(
+            "lpc55s69",
+            Some(&init_caboose),
+            None,
+            Some("app"),
+            None,
+        )
+        .unwrap();
+        let signing_certs = dummy_certs();
+
+        let result = archive.restamp(vec![], signing_certs, None);
+
+        match result {
+            Err(Error::Lpc55(lpc_err)) => {
+                let err_string = format!("{:?}", lpc_err);
+                assert!(
+                    err_string.contains("MissingCertificates") ||
+                    err_string.contains("InvalidInput") ||
+                    err_string.contains("MinItemsNotReached") ||
+                    err_string.contains("NoSigningCertificate") ||
+                    err_string.contains("NoRootCertificate"),
+                    "Unexpected LPC55 error type for empty root certs: {}",
+                    err_string
+                );
+            }
+            Ok(_) => panic!(
+                "Expected Lpc55 error due to empty root certificates, but got Ok"),
+            Err(e) => panic!(
+                "Expected Lpc55 error, but got different error: {:?}", e),
+        }
+    }
+}

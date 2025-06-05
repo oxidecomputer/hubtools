@@ -1,0 +1,40 @@
+# Represents the 'bart' configuration (aka our know test key)
+
+[cfpa]
+rkth0 = "enabled"
+rkth1 = "invalid"
+rkth2 = "invalid"
+rkth3 = "invalid"
+image_key_revoke  = 0
+debug.non-invasive-debug = "always-enabled"
+debug.invasive-debug = "always-enabled"
+debug.secure-non-invasive-debug = "always-enabled"
+debug.secure-invasive-debug = "always-enabled"
+debug.tap-enable = "always-enabled"
+debug.cpu1-dbg-enable = "always-enabled"
+debug.isp-enable = "always-enabled"
+debug.fa-me-enable = "always-enabled"
+debug.cpu1-non-invasive-enable = "always-enabled"
+debug.uuid-check = false
+
+[cmpa]
+secure_boot = true
+default_isp = "uart"
+boot_speed = "Fro96mhz"
+boot_err_pin = 17
+boot_err_port = 0
+only_rsa_4096 = false
+dice.enable-dice = true
+dice.dice-inc-nxp-cfg = true
+debug.non-invasive-debug = "always-enabled"
+debug.invasive-debug = "always-enabled"
+debug.secure-non-invasive-debug = "always-enabled"
+debug.secure-invasive-debug = "always-enabled"
+debug.tap-enable = "always-enabled"
+debug.cpu1-dbg-enable = "always-enabled"
+debug.isp-enable = "always-enabled"
+debug.fa-me-enable = "always-enabled"
+debug.cpu1-non-invasive-enable = "always-enabled"
+debug.uuid-check = false
+
+
