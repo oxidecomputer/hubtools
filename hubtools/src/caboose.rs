@@ -14,6 +14,10 @@ pub enum CabooseError {
     MissingTag { tag: [u8; 4] },
 }
 
+/// Parsed caboose data from a Hubris or bootloader image.
+///
+/// The caboose is a TLVC-encoded region at the end of the image containing
+/// metadata tags such as version, board name, git commit, and signing info.
 #[derive(Debug, Clone)]
 pub struct Caboose {
     raw: Vec<u8>,
@@ -60,6 +64,12 @@ impl Caboose {
             .unwrap_or(Err(CabooseError::MissingTag { tag }))
     }
 
+    /// Returns an iterator over caboose tags.
+    ///
+    /// Each item yields a `([u8; 4], &[u8])` tuple of (tag, data).
+    ///
+    /// The iterator handles 0xFF padding (erased flash) gracefully,
+    /// treating it as end-of-data rather than an error.
     pub fn iter(&self) -> Result<CabooseIter<'_>, CabooseError> {
         let reader = tlvc::TlvcReader::<&[u8]>::begin(self.as_slice())
             .map_err(CabooseError::TlvcReadError)?;
@@ -69,6 +79,9 @@ impl Caboose {
         })
     }
 
+    /// Returns `true` if the caboose contains no tags.
+    ///
+    /// Returns an error if the first chunk is corrupt.
     pub fn is_empty(&self) -> Result<bool, CabooseError> {
         match self.iter()?.next() {
             Some(Ok(_)) => Ok(false),
@@ -78,6 +91,13 @@ impl Caboose {
     }
 }
 
+/// Iterator over TLVC chunks in a caboose.
+///
+/// Created by [`Caboose::iter()`]. Yields `Result<([u8; 4], &[u8]), CabooseError>`
+/// for each chunk, where the tuple contains the 4-byte tag and the chunk data.
+///
+/// Handles 0xFF padding (common in erased flash) by treating it as
+/// end-of-iteration rather than an error.
 pub struct CabooseIter<'a> {
     reader: TlvcReader<&'a [u8]>,
     checksum_buf: [u8; 32],
