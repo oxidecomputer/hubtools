@@ -10,7 +10,7 @@ use x509_cert::Certificate;
 use zerocopy::{AsBytes, FromBytes};
 
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry},
     io::{Cursor, Read, Write},
     ops::Range,
     path::{Path, PathBuf},
@@ -77,10 +77,10 @@ impl RawHubrisImage {
         let mut segments: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
 
         for s in elf.segments() {
-            if let Ok(d) = s.data() {
-                if !d.is_empty() {
-                    segments.insert(s.address() as u32, d.to_vec());
-                }
+            if let Ok(d) = s.data()
+                && !d.is_empty()
+            {
+                segments.insert(s.address() as u32, d.to_vec());
             }
         }
 
@@ -856,7 +856,7 @@ impl RawHubrisArchive {
             ArchiveSource::Disk(ref path) => path.clone(),
             // We checked above that our source was `::Disk(_)`.
             ArchiveSource::Memory => {
-                return Err(Error::CannotOverwriteInMemoryArchive)
+                return Err(Error::CannotOverwriteInMemoryArchive);
             }
         };
 

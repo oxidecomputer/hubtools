@@ -2,10 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::header;
+use crate::CABOOSE_MAGIC;
 use crate::Error;
 use crate::RawHubrisImage;
-use crate::CABOOSE_MAGIC;
+use crate::header;
 use std::io;
 use std::io::Write;
 use zip::ZipWriter;
