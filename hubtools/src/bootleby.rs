@@ -4,11 +4,11 @@
 use object::{Object, ObjectSection, ObjectSegment};
 use std::path::PathBuf;
 
-use crate::header;
 use crate::Error;
 use crate::HubrisArchiveBuilder;
 use crate::RawHubrisArchive;
 use crate::RawHubrisImage;
+use crate::header;
 use zerocopy::AsBytes;
 
 fn image_length(elf: &object::read::File) -> Result<u64, Error> {

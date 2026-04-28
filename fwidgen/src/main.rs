@@ -16,9 +16,9 @@ use std::{fmt, str};
 ///
 /// This tool exists to:
 /// 1) allow appraisers to evaluate the FWID values produced by an attestation
-/// from an RoT and associate them with a particular hubris archive
+///    from an RoT and associate them with a particular hubris archive
 /// 2) to assist in the construction of a measurement corpus from a collection
-/// of hubris archives
+///    of hubris archives
 #[derive(Parser, Debug)]
 struct Args {
     /// Hash algorithm used to generate FWID

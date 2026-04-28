@@ -4,9 +4,9 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use hubtools::{bootleby_to_archive, HubrisArchiveBuilder, RawHubrisArchive};
+use hubtools::{HubrisArchiveBuilder, RawHubrisArchive, bootleby_to_archive};
 
 #[derive(Parser, Debug)]
 #[clap(name = "hubedit", max_term_width = 80)]
@@ -113,10 +113,10 @@ fn main() -> Result<()> {
             let mut t = tlvc_text::dump(reader);
 
             // Strip raw bytes from the end, for pretty-printing
-            if let Some(tlvc_text::Piece::Bytes(bs)) = t.last() {
-                if bs.iter().all(|c| *c == 0xFF) {
-                    t.pop();
-                }
+            if let Some(tlvc_text::Piece::Bytes(bs)) = t.last()
+                && bs.iter().all(|c| *c == 0xFF)
+            {
+                t.pop();
             }
 
             if t.is_empty() {

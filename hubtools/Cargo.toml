@@ -1,8 +1,7 @@
 [package]
 name = "hubtools"
 version = "0.4.7"
-edition = "2021"
-rust-version = "1.66"
+edition = "2024"
 
 [dependencies]
 object = { version = "0.30", default-features = false, features = ["write", "read"] }
