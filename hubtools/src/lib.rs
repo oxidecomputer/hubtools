@@ -7,7 +7,7 @@ use object::{Object, ObjectSection, ObjectSegment};
 use path_slash::PathBufExt;
 use thiserror::Error;
 use x509_cert::Certificate;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -339,19 +339,19 @@ impl RawHubrisImage {
     }
 
     /// Attempts to read `out.len()` bytes, starting at `start`
-    fn read<T: AsBytes + FromBytes + ?Sized>(
+    fn read<T: IntoBytes + FromBytes + Immutable + ?Sized>(
         &self,
         start: u32,
         out: &mut T,
     ) -> Result<(), Error> {
         let size = out.as_bytes().len() as u32;
-        out.as_bytes_mut()
+        out.as_mut_bytes()
             .copy_from_slice(self.get(start..start + size)?);
         Ok(())
     }
 
     /// Attempts to read `out.len()` bytes, starting at `start`
-    fn write<T: AsBytes + FromBytes + ?Sized>(
+    fn write<T: IntoBytes + FromBytes + Immutable + ?Sized>(
         &mut self,
         start: u32,
         input: &T,
@@ -812,9 +812,9 @@ impl RawHubrisArchive {
         let mut out_buf = vec![];
         let out_cursor = Cursor::new(&mut out_buf);
         let mut out = zip::ZipWriter::new(out_cursor);
-        out.set_raw_comment(archive.comment().to_vec());
+        out.set_raw_comment(archive.comment().into())?;
 
-        let opts = zip::write::FileOptions::default()
+        let opts = zip::write::FileOptions::<()>::default()
             .compression_method(zip::CompressionMethod::Bzip2);
 
         for i in 0..archive.len() {
@@ -824,7 +824,7 @@ impl RawHubrisArchive {
                 .ok_or_else(|| Error::BadFileInZip(file.name().to_owned()))?
                 .to_owned();
 
-            let path = outpath.to_slash().unwrap();
+            let path = outpath.to_slash().unwrap().into_owned();
             if !self.new_files.contains_key(&path) {
                 out.start_file(path, opts)?;
                 std::io::copy(&mut file, &mut out).unwrap();
@@ -838,7 +838,6 @@ impl RawHubrisArchive {
         }
 
         out.finish()?;
-        drop(out);
 
         Ok(out_buf)
     }
@@ -1168,13 +1167,13 @@ impl std::fmt::Display for Chip {
 }
 
 mod header {
-    use zerocopy::{AsBytes, FromBytes};
+    use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
     // Defined in the kernel ABI crate - we support both the original and
     // new-style magic numbers, which use the same header layout.
     pub(crate) const MAGIC: [u32; 2] = [0x15356637, 0x64_CE_D6_CA];
 
-    #[derive(Default, AsBytes, FromBytes)]
+    #[derive(Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
     #[repr(C)]
     pub(crate) struct ImageHeader {
         pub magic: u32,

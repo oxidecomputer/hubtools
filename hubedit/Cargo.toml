@@ -4,9 +4,8 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-anyhow.version = "1"
+anyhow.workspace = true
 hubtools.workspace = true
-clap = { version = "4", features = ["derive", "env", "wrap_help"] }
-
-tlvc.git = "https://github.com/oxidecomputer/tlvc"
-tlvc-text.git = "https://github.com/oxidecomputer/tlvc"
+clap.workspace = true
+tlvc.workspace = true
+tlvc-text.workspace = true
