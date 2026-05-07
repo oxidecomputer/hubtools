@@ -4,18 +4,17 @@ version = "0.4.8"
 edition = "2024"
 
 [dependencies]
-object = { version = "0.30", default-features = false, features = ["write", "read"] }
-path-slash = { version = "0.1", default-features = false }
-thiserror = { version = "1", default-features = false }
-toml = { version = "0.7", default-features = false, features = ["parse"] }
-x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-zerocopy = { version = "0.6", default-features = false }
-zip = { version = "0.6", default-features = false, features = ["bzip2"] }
-hex = { version = "0.4.3", default-features = false }
-digest = { version = "0.10.7", default-features = false }
-
-tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, version = "0.4" }
-tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, version = "0.4" }
-lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.3" }
-lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
-rsa = { version = "0.9.0", default-features = false, features = ["std", "pem", "sha2"] }
+digest.workspace = true
+hex.workspace = true
+lpc55_areas.workspace = true
+lpc55_sign.workspace = true
+object.workspace = true
+path-slash.workspace = true
+rsa.workspace = true
+thiserror.workspace = true
+tlvc-text.workspace = true
+tlvc.workspace = true
+toml.workspace = true
+x509-cert.workspace = true
+zerocopy.workspace = true
+zip.workspace = true

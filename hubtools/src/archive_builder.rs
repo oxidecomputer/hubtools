@@ -92,14 +92,14 @@ impl HubrisArchiveBuilder {
     where
         W: io::Write + io::Seek,
     {
-        let opts = zip::write::FileOptions::default()
+        let opts = zip::write::FileOptions::<()>::default()
             .compression_method(zip::CompressionMethod::Bzip2);
 
         let mut archive = ZipWriter::new(out);
         archive.set_comment(format!(
             "hubris build archive v{}",
             self.archive_version
-        ));
+        ))?;
 
         archive.start_file("img/final.elf", opts)?;
         let elf = self.image.to_elf()?;

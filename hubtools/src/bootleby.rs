@@ -9,7 +9,7 @@ use crate::HubrisArchiveBuilder;
 use crate::RawHubrisArchive;
 use crate::RawHubrisImage;
 use crate::header;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 fn image_length(elf: &object::read::File) -> Result<u64, Error> {
     let mut total: u64 = 0;
@@ -79,7 +79,7 @@ fn add_image_header(path: PathBuf) -> Result<Vec<u8>, Error> {
 
     header
         .write_to_prefix(&mut f[(offset as usize)..])
-        .ok_or(Error::BadPrefix)?;
+        .map_err(|_| Error::BadPrefix)?;
 
     Ok(f)
 }
