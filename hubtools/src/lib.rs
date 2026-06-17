@@ -531,6 +531,15 @@ pub struct RawHubrisArchive {
     pub archive_version: u32,
 }
 
+/// Metadata for a file within a Hubris archive
+#[derive(Debug)]
+pub struct FileMetadata {
+    /// File name
+    pub name: String,
+    /// Uncompressed size
+    pub size: u64,
+}
+
 impl RawHubrisArchive {
     pub fn from_vec(contents: Vec<u8>) -> Result<Self, Error> {
         Self::new(contents, ArchiveSource::Memory)
@@ -636,6 +645,25 @@ impl RawHubrisArchive {
         file.read_to_end(&mut buffer)
             .map_err(Error::FileReadError)?;
         Ok(buffer)
+    }
+
+    /// Returns file metadata in the ZIP archive by index
+    ///
+    /// This function does not decompress the file, so it's cheaper than
+    /// [`extract_file_by_index`](Self::extract_file_by_index).
+    pub fn file_metadata_by_index(
+        &self,
+        index: usize,
+    ) -> Result<FileMetadata, Error> {
+        let cursor = Cursor::new(self.zip.as_slice());
+        let mut archive =
+            zip::ZipArchive::new(cursor).map_err(Error::ZipNewError)?;
+        let file = archive
+            .by_index(index)
+            .map_err(|e| Error::BadFileIndex(e, index))?;
+        let name = file.name().to_string();
+        let size = file.size();
+        Ok(FileMetadata { name, size })
     }
 
     /// Extacts a file from the ZIP archive by index
