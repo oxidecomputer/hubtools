@@ -308,7 +308,7 @@ impl RawHubrisImage {
             .ok_or(Error::MissingCaboose)?;
         self.read(caboose_magic_addr, &mut caboose_magic)?;
         if caboose_magic != CABOOSE_MAGIC {
-            return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic))?;
+            return Err(Error::BadCabooseMagic(CABOOSE_MAGIC, caboose_magic));
         }
         Ok(start_addr + image_size - caboose_size + 4
             ..start_addr + image_size - 4)
