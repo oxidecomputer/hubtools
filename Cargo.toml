@@ -21,7 +21,8 @@ rsa = { version = "0.9.0", default-features = false, features = ["std", "pem", "
 sha2 = { version = "0.11.0", default-features = false }
 sha3 = { version = "0.11.0", default-features = false }
 
-tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, version = "0.4" }
-tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, version = "0.4" }
-lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.3" }
-lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, version = "0.2" }
+tlvc = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, rev = "7a96eab94c8aec9120412d8601ffd68853957da3" }
+tlvc-text = { git = "https://github.com/oxidecomputer/tlvc", default-features = false, rev = "7a96eab94c8aec9120412d8601ffd68853957da3" }
+lpc55_sign = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, rev = "fc64732faf5511850b35f1734d572b9953d73374" }
+lpc55_areas = { git = "https://github.com/oxidecomputer/lpc55_support", default-features = false, rev = "fc64732faf5511850b35f1734d572b9953d73374" }
+
