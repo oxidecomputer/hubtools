@@ -1047,8 +1047,8 @@ dependencies = [
 
 [[package]]
 name = "tlvc"
-version = "0.4.1"
-source = "git+https://github.com/oxidecomputer/tlvc?rev=7a96eab94c8aec9120412d8601ffd68853957da3#7a96eab94c8aec9120412d8601ffd68853957da3"
+version = "0.4.2"
+source = "git+https://github.com/oxidecomputer/tlvc?rev=12f6bf8cd5b04715a9e0efefeb4c9bb4a2c0e4ca#12f6bf8cd5b04715a9e0efefeb4c9bb4a2c0e4ca"
 dependencies = [
  "crc",
  "thiserror",
@@ -1059,7 +1059,7 @@ dependencies = [
 [[package]]
 name = "tlvc-text"
 version = "0.4.0"
-source = "git+https://github.com/oxidecomputer/tlvc?rev=7a96eab94c8aec9120412d8601ffd68853957da3#7a96eab94c8aec9120412d8601ffd68853957da3"
+source = "git+https://github.com/oxidecomputer/tlvc?rev=12f6bf8cd5b04715a9e0efefeb4c9bb4a2c0e4ca#12f6bf8cd5b04715a9e0efefeb4c9bb4a2c0e4ca"
 dependencies = [
  "ron",
  "serde",
