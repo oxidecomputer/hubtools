@@ -661,7 +661,7 @@ impl RawHubrisArchive {
         let file = archive
             .by_index(index)
             .map_err(|e| Error::BadFileIndex(e, index))?;
-        let name = file.name().to_string();
+        let name = file.name()?.into_owned();
         let size = file.size();
         Ok(FileMetadata { name, size })
     }
@@ -682,7 +682,7 @@ impl RawHubrisArchive {
         let mut buffer = vec![];
         file.read_to_end(&mut buffer)
             .map_err(Error::FileReadError)?;
-        Ok((file.name().to_string(), buffer))
+        Ok((file.name()?.into_owned(), buffer))
     }
 
     /// Gets the total number of files in the archive
@@ -849,7 +849,10 @@ impl RawHubrisArchive {
             let mut file = archive.by_index(i).unwrap();
             let outpath = file
                 .enclosed_name()
-                .ok_or_else(|| Error::BadFileInZip(file.name().to_owned()))?
+                .ok_or_else(|| match file.name() {
+                    Ok(name) => Error::BadFileInZip(name.into_owned()),
+                    Err(e) => Error::ZipError(e),
+                })?
                 .to_owned();
 
             let path = outpath.to_slash().unwrap().into_owned();

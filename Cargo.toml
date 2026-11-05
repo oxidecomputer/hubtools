@@ -14,7 +14,7 @@ thiserror = { version = "2", default-features = false }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 zerocopy = { version = "0.8", default-features = false }
-zip = { version = "8", default-features = false, features = ["bzip2"] }
+zip = { version = "9", default-features = false, features = ["bzip2"] }
 hex = { version = "0.4.3", default-features = false }
 digest = { version = "0.11", default-features = false }
 rsa = { version = "0.9.0", default-features = false, features = ["std", "pem", "sha2"] }
